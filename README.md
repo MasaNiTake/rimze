@@ -1,2 +1,7 @@
-# rimze
-rust images/manga viewer
+# RIMZE
+Rust
+Images
+/
+Manga
+Zippy
+Egui viewer
