@@ -15,6 +15,7 @@ pub enum UiCommand {
 
 pub struct ComicViewerUI {
     pub last_open_dir: Option<PathBuf>,
+    pub last_selected_path: Option<PathBuf>,
 }
 
 impl ComicViewerUI {
@@ -22,6 +23,7 @@ impl ComicViewerUI {
     pub fn new() -> Self {
         Self {
             last_open_dir: directories::UserDirs::new().and_then(|ud| ud.picture_dir().map(|p| p.to_path_buf())),
+            last_selected_path: None,
         }
     }
 
@@ -110,15 +112,30 @@ impl ComicViewerUI {
             ui.heading("ファイル一覧");
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if let Some(directory) = &app_state.directory {
+                    let mut scroll_to_path = None;
+                    if let Some(cf) = &app_state.content_file {
+                        if self.last_selected_path.as_ref() != Some(&cf.path) {
+                            scroll_to_path = Some(cf.path.clone());
+                            self.last_selected_path = Some(cf.path.clone());
+                        }
+                    } else {
+                        self.last_selected_path = None;
+                    }
+
                     for path in &directory.files {
                         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
                         let is_selected = app_state.content_file.as_ref().map_or(false, |cf| cf.path == *path);
-                        if ui.selectable_label(is_selected, file_name).clicked() {
+                        let response = ui.selectable_label(is_selected, file_name);
+                        if response.clicked() {
                             commands.push(UiCommand::OpenFile(path.clone()));
+                        }
+                        if Some(path) == scroll_to_path.as_ref() {
+                            response.scroll_to_me(Some(egui::Align::TOP));
                         }
                     }
                 } else {
                     ui.label("ディレクトリが選択されていません。");
+                    self.last_selected_path = None;
                 }
             });
         });
