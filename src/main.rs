@@ -57,6 +57,7 @@ struct MyApp {
     update_tx: std::sync::mpsc::Sender<UiUpdateMsg>,
     update_rx: std::sync::mpsc::Receiver<UiUpdateMsg>,
     last_error: Option<String>,
+    is_pointer_over_central_panel: bool,
 }
 
 // UI構築のために必要なアプリケーション状態をまとめた構造体
@@ -68,6 +69,7 @@ pub struct ComicViewerAppState<'a> {
     pub max_load_use_memory: &'a mut usize,
     pub directory: &'a Option<content::Directory>,
     pub current_page_index: &'a mut usize,
+    pub is_pointer_over_central_panel: &'a mut bool,
 }
 
 /// UIの更新メッセージを定義します。
@@ -100,6 +102,7 @@ impl eframe::App for MyApp {
             max_load_use_memory: &mut self.max_load_use_memory,
             directory: &self.directory,
             current_page_index: &mut self.current_page_index,
+            is_pointer_over_central_panel: &mut self.is_pointer_over_central_panel,
         };
 
         let commands = self.ui_state.build_ui(ctx, frame, &mut app_state);
@@ -206,6 +209,7 @@ impl MyApp{
             update_tx,
             update_rx,
             last_error: None,
+            is_pointer_over_central_panel: false,
         }
     }
 
@@ -327,12 +331,12 @@ impl MyApp{
         }
     }
 
-    /// 画像の切り替えを行います。
     fn handle_image_navigation(&mut self, ctx: &egui::Context){
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight) || i.raw_scroll_delta.y < 0.0) {
+        let scroll_delta = ctx.input(|i| i.raw_scroll_delta.y);
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) || (self.is_pointer_over_central_panel && scroll_delta < 0.0) {
             self.show_next_content();
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft) || i.raw_scroll_delta.y > 0.0) {
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) || (self.is_pointer_over_central_panel && scroll_delta > 0.0) {
             self.show_previous_content();
         }
     }

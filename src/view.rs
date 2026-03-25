@@ -144,7 +144,7 @@ impl ComicViewerUI {
 
     /// アプリケーションの中央パネル（画像表示領域）を構築します。
     fn central_panel(&mut self, ctx: &Context, app_state: &mut ComicViewerAppState) {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let response = egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(image_handle) = &app_state.current_image_handle {
                 let image_widget = egui::Image::new(image_handle)
                     .bg_fill(ui.style().visuals.panel_fill)
@@ -158,7 +158,8 @@ impl ComicViewerUI {
                     ui.label("画像をドラッグ＆ドロップするか、ファイルメニューから開いてください。");
                 });
             }
-        });
+        }).response;
+        *app_state.is_pointer_over_central_panel = response.hovered();
     }
 
     /// アプリケーションの下部パネル（ページスライダー）を構築します。
