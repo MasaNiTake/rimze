@@ -1,6 +1,6 @@
 use eframe::egui::{self, Context};
 use std::path::PathBuf;
-use crate::content::{FileType, SortType};
+use crate::content::{FileType, SortType, SortOrder};
 use crate::ComicViewerAppState;
 
 /// UIからアプリケーションのメインロジックへ送られるコマンドを定義します。
@@ -8,7 +8,7 @@ pub enum UiCommand {
     OpenFile(PathBuf),
     OpenFileDialog,
     CloseFile,
-    SetSort(SortType),
+    SetSortAndOrder(SortType, SortOrder),
     ChangePage(usize),
     SetMaxMemory(usize),
 }
@@ -54,18 +54,42 @@ impl ComicViewerUI {
                 });
                 ui.menu_button("設定", |ui| {
                     ui.menu_button("ソート順", |ui| {
-                        if ui.radio_value(app_state.sort_files, SortType::FileName, "ファイル名").clicked() {
-                            commands.push(UiCommand::SetSort(SortType::FileName));
-                            ui.close_menu();
-                        }
-                        if ui.radio_value(app_state.sort_files, SortType::ModifiedDate, "更新日時").clicked() {
-                            commands.push(UiCommand::SetSort(SortType::ModifiedDate));
-                            ui.close_menu();
-                        }
-                        if ui.radio_value(app_state.sort_files, SortType::CreationDate, "作成日時").clicked() {
-                             commands.push(UiCommand::SetSort(SortType::CreationDate));
-                            ui.close_menu();
-                        }
+                        ui.menu_button("ファイル名", |ui| {
+                            let is_asc = *app_state.sort_files == SortType::FileName && *app_state.sort_order == SortOrder::Ascending;
+                            if ui.radio(is_asc, "昇順").clicked() {
+                                commands.push(UiCommand::SetSortAndOrder(SortType::FileName, SortOrder::Ascending));
+                                ui.close();
+                            }
+                            let is_desc = *app_state.sort_files == SortType::FileName && *app_state.sort_order == SortOrder::Descending;
+                            if ui.radio(is_desc, "降順").clicked() {
+                                commands.push(UiCommand::SetSortAndOrder(SortType::FileName, SortOrder::Descending));
+                                ui.close();
+                            }
+                        });
+                        ui.menu_button("更新日時", |ui| {
+                            let is_asc = *app_state.sort_files == SortType::ModifiedDate && *app_state.sort_order == SortOrder::Ascending;
+                            if ui.radio(is_asc, "昇順").clicked() {
+                                commands.push(UiCommand::SetSortAndOrder(SortType::ModifiedDate, SortOrder::Ascending));
+                                ui.close();
+                            }
+                            let is_desc = *app_state.sort_files == SortType::ModifiedDate && *app_state.sort_order == SortOrder::Descending;
+                            if ui.radio(is_desc, "降順").clicked() {
+                                commands.push(UiCommand::SetSortAndOrder(SortType::ModifiedDate, SortOrder::Descending));
+                                ui.close();
+                            }
+                        });
+                        ui.menu_button("作成日時", |ui| {
+                            let is_asc = *app_state.sort_files == SortType::CreationDate && *app_state.sort_order == SortOrder::Ascending;
+                            if ui.radio(is_asc, "昇順").clicked() {
+                                commands.push(UiCommand::SetSortAndOrder(SortType::CreationDate, SortOrder::Ascending));
+                                ui.close();
+                            }
+                            let is_desc = *app_state.sort_files == SortType::CreationDate && *app_state.sort_order == SortOrder::Descending;
+                            if ui.radio(is_desc, "降順").clicked() {
+                                commands.push(UiCommand::SetSortAndOrder(SortType::CreationDate, SortOrder::Descending));
+                                ui.close();
+                            }
+                        });
                     });
                     
                     let mut max_mem_mb = *app_state.max_load_use_memory / (1024 * 1024);

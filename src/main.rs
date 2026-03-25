@@ -7,7 +7,7 @@ use std::sync::mpsc::{Sender, Receiver};
 mod content;
 mod view;
 
-use content::{CacheKey, ComicFile, FileType, SortType, Directory, ImageExtension, FileExtension};
+use content::{CacheKey, ComicFile, FileType, SortType, SortOrder, Directory, ImageExtension, FileExtension};
 use view::UiCommand;
 
 
@@ -44,6 +44,7 @@ struct MyApp {
     content_file: Option<content::ComicFile>,
     current_image_handle: Option<egui::TextureHandle>,
     sort_files: content::SortType,
+    sort_order: content::SortOrder,
     directory: Option<content::Directory>,
     parent_directory: Option<content::Directory>,
     max_load_use_memory: usize,
@@ -63,6 +64,7 @@ pub struct ComicViewerAppState<'a> {
     pub content_file: &'a mut Option<content::ComicFile>,
     pub current_image_handle: &'a mut Option<egui::TextureHandle>,
     pub sort_files: &'a mut content::SortType,
+    pub sort_order: &'a mut content::SortOrder,
     pub max_load_use_memory: &'a mut usize,
     pub directory: &'a Option<content::Directory>,
     pub current_page_index: &'a mut usize,
@@ -94,6 +96,7 @@ impl eframe::App for MyApp {
             content_file: &mut self.content_file,
             current_image_handle: &mut self.current_image_handle,
             sort_files: &mut self.sort_files,
+            sort_order: &mut self.sort_order,
             max_load_use_memory: &mut self.max_load_use_memory,
             directory: &self.directory,
             current_page_index: &mut self.current_page_index,
@@ -190,6 +193,7 @@ impl MyApp{
             content_file: None,
             current_image_handle: None,
             sort_files: Default::default(),
+            sort_order: Default::default(),
             directory: None,
             parent_directory:  None,
             max_load_use_memory: max_memory_usage,
@@ -228,12 +232,11 @@ impl MyApp{
                 self.directory = None;
                 self.parent_directory = None;
             }
-            UiCommand::SetSort(sort_type) => {
-                if self.sort_files != sort_type {
-                    self.sort_files = sort_type;
-                    if let Some(path) = self.current_directory_path.clone() {
-                        self.load_directory_content(path, false);
-                    }
+            UiCommand::SetSortAndOrder(sort_type, sort_order) => {
+                self.sort_files = sort_type;
+                self.sort_order = sort_order;
+                if let Some(path) = self.current_directory_path.clone() {
+                    self.load_directory_content(path, false);
                 }
             }
             UiCommand::ChangePage(new_page) => {
@@ -291,9 +294,10 @@ impl MyApp{
                         let comic_loader = self.comic_loader.clone();
                         let tx = self.update_tx.clone();
                         let sort_type = self.sort_files.clone();
+                        let sort_order = self.sort_order.clone();
                         let path_clone = path.clone();
                         self.tokio_rt.spawn(async move {
-                            match comic_loader.list_directory_paths(&path_clone, &sort_type).await {
+                            match comic_loader.list_directory_paths(&path_clone, &sort_type, &sort_order).await {
                                 Ok(paths) => {
                                     let dir = content::Directory { path: path_clone, files: paths };
                                     // このアクションに対応する特定のメッセージを送信します。
@@ -348,6 +352,7 @@ impl MyApp{
         let comic_loader = self.comic_loader.clone();
         let tx = self.update_tx.clone();
         let sort_type = self.sort_files.clone();
+        let sort_order = self.sort_order.clone();
 
         self.tokio_rt.spawn(async move {
             let metadata_result = tokio::fs::metadata(&path).await;
@@ -361,7 +366,7 @@ impl MyApp{
 
             if is_dir {
                 // ディレクトリです。内容をリストアップし、最初または最後の画像ファイルを開きます。
-                match comic_loader.list_directory_paths(&path, &sort_type).await {
+                match comic_loader.list_directory_paths(&path, &sort_type, &sort_order).await {
                     Ok(paths) => {
                         let file_to_open = match initial_page {
                             InitialPage::First => paths.iter().find(|p| ImageExtension::from_str(p.extension().and_then(|s| s.to_str()).unwrap_or("")).is_some()),
@@ -441,9 +446,10 @@ impl MyApp{
         let comic_loader = self.comic_loader.clone();
         let tx = self.update_tx.clone();
         let sort_type = self.sort_files.clone();
+        let sort_order = self.sort_order.clone();
 
         self.tokio_rt.spawn(async move {
-            match comic_loader.list_directory_paths(&path, &sort_type).await {
+            match comic_loader.list_directory_paths(&path, &sort_type, &sort_order).await {
                 Ok(paths) => {
                     debug!("Loaded directory: {:?}", path);
                     let dir = content::Directory { path, files: paths };

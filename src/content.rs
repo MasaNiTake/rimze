@@ -198,6 +198,16 @@ pub enum SortType {
     CreationDate,
 }
 
+/// ファイルのソート順（昇順・降順）を定義します。
+#[derive(Debug, Default, Clone, PartialEq)]
+pub enum SortOrder {
+    /// 昇順（デフォルト）。新しいもの、または文字コード順。
+    #[default]
+    Ascending,
+    /// 降順。古いもの、または逆順。
+    Descending,
+}
+
 /// 漫画ファイル（画像、ZIP、PDF、ディレクトリ）に関する共通情報を保持する構造体です。
 ///
 /// ファイルのパス、タイプ、およびタイムスタンプ情報を含みます。
@@ -397,7 +407,7 @@ impl ComicLoader {
     /// 6. `handles` が空の場合（つまり、ファイル名ソートが要求された場合）、
     ///    `natural_sort_by_key` を使用してファイル名を自然順でソートします。
     /// 7. ソートされた `paths` ベクトルを `Ok` でラップして返します。
-    pub async fn list_directory_paths(&self, dir_path: &PathBuf, sort_type: &SortType) -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn list_directory_paths(&self, dir_path: &PathBuf, sort_type: &SortType, sort_order: &SortOrder) -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
         let mut paths = Vec::new();
         let mut entries = tokio::fs::read_dir(dir_path).await?;
 
@@ -426,16 +436,20 @@ impl ComicLoader {
             }
             match sort_type {
                 SortType::ModifiedDate => {
-                    files_with_meta.sort_by(|a, b| b.1.modified().unwrap_or(SystemTime::UNIX_EPOCH).cmp(&a.1.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
+                    files_with_meta.sort_by(|a, b| a.1.modified().unwrap_or(SystemTime::UNIX_EPOCH).cmp(&b.1.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
                 },
                 SortType::CreationDate => {
-                    files_with_meta.sort_by(|a, b| b.1.created().unwrap_or(SystemTime::UNIX_EPOCH).cmp(&a.1.created().unwrap_or(SystemTime::UNIX_EPOCH)));
+                    files_with_meta.sort_by(|a, b| a.1.created().unwrap_or(SystemTime::UNIX_EPOCH).cmp(&b.1.created().unwrap_or(SystemTime::UNIX_EPOCH)));
                 },
                 _ => {},
             }
             paths = files_with_meta.into_iter().map(|(p, _)| p).collect();
         } else {
             paths.natural_sort_by_key::<str, _, _>(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string());
+        }
+
+        if *sort_order == SortOrder::Descending {
+            paths.reverse();
         }
         Ok(paths)
     }
