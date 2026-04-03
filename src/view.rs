@@ -112,18 +112,20 @@ impl ComicViewerUI {
     /// アプリケーションのサイドパネル（漫画ファイルリスト）を構築します。
     fn side_panel(&mut self, ctx: &Context, app_state: &mut ComicViewerAppState, thumb_height: f32) -> Vec<UiCommand> {
         let mut commands = Vec::new();
-        egui::SidePanel::left("side_panel").show(ctx, |ui| {
-            ui.heading("ファイル一覧");
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label("🔍");
-                let response = ui.add(egui::TextEdit::singleline(app_state.file_filter)
-                    .hint_text("ファイル名を検索...")
-                    .desired_width(ui.available_width()));
-                if ui.button("×").on_hover_text("検索をクリア").clicked() {
-                    app_state.file_filter.clear();
-                }
-            });
+        egui::SidePanel::left("side_panel")
+            .default_width(250.0)
+            .show(ctx, |ui| {
+                ui.heading("ファイル一覧");
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("🔍");
+                    ui.add(egui::TextEdit::singleline(app_state.file_filter)
+                        .hint_text("ファイル名を検索...")
+                    );
+                    if ui.button("×").on_hover_text("検索をクリア").clicked() {
+                        app_state.file_filter.clear();
+                    }
+                });
             ui.add_space(4.0);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if let Some(directory) = &app_state.directory {
