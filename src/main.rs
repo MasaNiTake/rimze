@@ -6,6 +6,8 @@ use std::sync::mpsc::{Sender, Receiver};
 
 mod content;
 mod view;
+mod settings;
+mod thumbnail;
 
 use content::{CacheKey, ComicFile, FileType, SortType, SortOrder, Directory, ImageExtension, FileExtension};
 use view::UiCommand;
@@ -58,6 +60,7 @@ struct MyApp {
     update_rx: std::sync::mpsc::Receiver<UiUpdateMsg>,
     last_error: Option<String>,
     is_pointer_over_central_panel: bool,
+    app_settings: settings::AppSettings,
 }
 
 // UI構築のために必要なアプリケーション状態をまとめた構造体
@@ -174,6 +177,16 @@ impl eframe::App for MyApp {
     }
 }
 
+impl MyApp {
+    fn update_and_save_settings(&mut self) {
+        self.app_settings.sort_files = self.sort_files.clone();
+        self.app_settings.sort_order = self.sort_order.clone();
+        self.app_settings.max_load_use_memory = self.max_load_use_memory;
+        self.app_settings.last_open_dir = self.ui_state.last_open_dir.clone();
+        self.app_settings.save();
+    }
+}
+
 impl MyApp{
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (update_tx, update_rx) = std::sync::mpsc::channel();
@@ -186,8 +199,10 @@ impl MyApp{
         fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().push("ja_font".to_owned());
         cc.egui_ctx.set_fonts(fonts);
 
+        let app_settings = settings::AppSettings::load();
+        
         let tokio_rt = Arc::new(runtime::Builder::new_multi_thread().enable_all().build().unwrap());
-        let max_memory_usage = 500 * 1024 * 1024;
+        let max_memory_usage = app_settings.max_load_use_memory;
         let image_cache = Arc::new(Mutex::new(content::ImageCache::new(max_memory_usage)));
         let comic_loader = Arc::new(content::ComicLoader::new(tokio_rt.clone(), image_cache.clone()));
 
@@ -195,8 +210,8 @@ impl MyApp{
             dropped_files: Default::default(),
             content_file: None,
             current_image_handle: None,
-            sort_files: Default::default(),
-            sort_order: Default::default(),
+            sort_files: app_settings.sort_files.clone(),
+            sort_order: app_settings.sort_order.clone(),
             directory: None,
             parent_directory:  None,
             max_load_use_memory: max_memory_usage,
@@ -205,11 +220,12 @@ impl MyApp{
             image_cache,
             current_page_index: 0,
             current_directory_path: None,
-            ui_state: view::ComicViewerUI::new(),
+            ui_state: view::ComicViewerUI::new(app_settings.last_open_dir.clone()),
             update_tx,
             update_rx,
             last_error: None,
             is_pointer_over_central_panel: false,
+            app_settings,
         }
     }
 
@@ -224,6 +240,7 @@ impl MyApp{
 
                 if let Some(path) = file {
                     self.ui_state.last_open_dir = path.parent().map(|p| p.to_path_buf());
+                    self.update_and_save_settings();
                     self.open_new_file(path);
                 }
             }
@@ -239,6 +256,7 @@ impl MyApp{
             UiCommand::SetSortAndOrder(sort_type, sort_order) => {
                 self.sort_files = sort_type;
                 self.sort_order = sort_order;
+                self.update_and_save_settings();
                 if let Some(path) = self.current_directory_path.clone() {
                     self.load_directory_content(path, false);
                 }
@@ -252,6 +270,7 @@ impl MyApp{
             UiCommand::SetMaxMemory(bytes) => {
                 self.max_load_use_memory = bytes;
                 self.image_cache.lock().unwrap().set_max_memory_usage(bytes);
+                self.update_and_save_settings();
             }
         }
     }
@@ -487,13 +506,31 @@ impl MyApp{
 
         if let Some(image_data) = self.image_cache.lock().unwrap().get(&key) {
             debug!("Cache hit for {:?}", key);
-            self.decode_and_display(image_data);
+            self.decode_and_display(image_data.clone()); // Clone to pass it for thumbnail if needed
+            self.try_trigger_thumbnail(file, page_index, image_data);
         } else {
             debug!("Cache miss for {:?}. Loading from source.", key);
             self.load_from_source_and_display(file, page_index, key.clone());
         }
 
         self.update_cache_and_prefetch(&key);
+    }
+    
+    /// サムネイル生成をバックグラウンドで試行します。
+    fn try_trigger_thumbnail(&self, file: ComicFile, page_index: usize, image_data: Vec<u8>) {
+        // ZIPの場合は最初のページのみ、画像の場合はその画像のみ
+        let should_generate = match &file.file_type {
+            FileType::Image(_) => true,
+            FileType::Zip(_) => page_index == 0,
+            _ => false,
+        };
+
+        if should_generate {
+            let path = file.path.clone();
+            self.tokio_rt.spawn(async move {
+                thumbnail::ThumbnailManager::ensure_thumbnail(path, image_data);
+            });
+        }
     }
     
     /// ソースから画像を直接読み込み、表示し、キャッシュに格納する
@@ -523,6 +560,20 @@ impl MyApp{
                             img.to_rgba8().as_flat_samples().as_slice(),
                         );
                         tx.send(UiUpdateMsg::ImageLoaded(color_image)).ok();
+                        
+                        // サムネイル生成をこのタスク内からでも別タスクとしてキック
+                        let should_generate = match &file.file_type {
+                            FileType::Image(_) => true,
+                            FileType::Zip(_) => page_index == 0,
+                            _ => false,
+                        };
+                        if should_generate {
+                            let path = file.path.clone();
+                            let data_clone = data.clone();
+                            tokio::spawn(async move {
+                                thumbnail::ThumbnailManager::ensure_thumbnail(path, data_clone);
+                            });
+                        }
                     } else {
                         tx.send(UiUpdateMsg::Error("Failed to decode image".to_string())).ok();
                     }

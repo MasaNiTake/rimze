@@ -13,10 +13,11 @@ egui_extras = { version = "*", features = ["all_loaders"] }
 encoding_rs = "0.8.33"
 env_logger = "0.11.2"
 futures = "0.3.30"
-image = { version = "0.24", features = ["png","gif","bmp","webp",] }
+image = { version = "0.24", features = ["png","gif","bmp","webp","avif",] }
 log = "0.4.20"
 mime = "0.3.17"
 mime_guess = "2.0.4"
+serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "*"
 simplelog = "0.12.2"
 tokio = { version = "*", features = ["full"] }
@@ -28,6 +29,8 @@ lopdf = "0.30.0"
 directories = "5.0.1"
 natural-sort-rs = "0.2.1"
 rfd = "0.15.3"
+sha2 = "0.10"
+hex = "0.4"
 
 [profile.dev]
 opt-level = 0

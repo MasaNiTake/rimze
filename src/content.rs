@@ -7,6 +7,7 @@ use tokio::runtime::Runtime;
 use zip::ZipArchive;
 use natural_sort_rs::NaturalSort;
 use tracing::debug;
+use serde::{Serialize, Deserialize};
 
 /// 画像ファイルの拡張子を定義します。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,7 +188,7 @@ pub struct Directory {
 /// ファイルのソート順を定義します。
 ///
 /// この列挙型は、ディレクトリ内のファイルをリストアップする際に使用されるソート基準を表します。
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SortType {
     /// ファイル名でソートします（デフォルト）。
     #[default]
@@ -199,7 +200,7 @@ pub enum SortType {
 }
 
 /// ファイルのソート順（昇順・降順）を定義します。
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SortOrder {
     /// 昇順（デフォルト）。新しいもの、または文字コード順。
     #[default]

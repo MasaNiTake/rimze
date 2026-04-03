@@ -20,9 +20,9 @@ pub struct ComicViewerUI {
 
 impl ComicViewerUI {
     /// 新しい`ComicViewerUI`インスタンスを作成します。
-    pub fn new() -> Self {
+    pub fn new(last_open_dir: Option<PathBuf>) -> Self {
         Self {
-            last_open_dir: directories::UserDirs::new().and_then(|ud| ud.picture_dir().map(|p| p.to_path_buf())),
+            last_open_dir,
             last_selected_path: None,
         }
     }
