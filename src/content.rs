@@ -17,12 +17,13 @@ pub enum ImageExtension {
     Jpeg,
     Webp,
     Gif,
+    Avif,
 }
 
 impl ImageExtension {
     /// 画像ファイル拡張子のスライスを返します。
     pub fn as_slice() -> &'static [ImageExtension] {
-        &[Self::Png, Self::Jpg, Self::Jpeg, Self::Webp, Self::Gif]
+        &[Self::Png, Self::Jpg, Self::Jpeg, Self::Webp, Self::Gif, Self::Avif]
     }
     
     /// 拡張子の文字列表現を返します。
@@ -33,6 +34,7 @@ impl ImageExtension {
             Self::Jpeg => "jpeg",
             Self::Webp => "webp",
             Self::Gif => "gif",
+            Self::Avif => "avif",
         }
     }
     
@@ -44,6 +46,7 @@ impl ImageExtension {
             "jpeg" => Some(Self::Jpeg),
             "webp" => Some(Self::Webp),
             "gif" => Some(Self::Gif),
+            "avif" => Some(Self::Avif),
             _ => None,
         }
     }
@@ -59,12 +62,13 @@ pub enum FileExtension {
     Gif,
     Zip,
     Pdf,
+    Avif,
 }
 
 impl FileExtension {
     /// 全ファイル拡張子のスライスを返します。
     pub fn as_slice() -> &'static [FileExtension] {
-        &[Self::Png, Self::Jpg, Self::Jpeg, Self::Webp, Self::Gif, Self::Zip, Self::Pdf]
+        &[Self::Png, Self::Jpg, Self::Jpeg, Self::Webp, Self::Gif, Self::Zip, Self::Pdf, Self::Avif]
     }
     
     /// 拡張子の文字列表現を返します。
@@ -77,6 +81,7 @@ impl FileExtension {
             Self::Gif => "gif",
             Self::Zip => "zip",
             Self::Pdf => "pdf",
+            Self::Avif => "avif",
         }
     }
     
@@ -90,6 +95,7 @@ impl FileExtension {
             "gif" => Some(Self::Gif),
             "zip" => Some(Self::Zip),
             "pdf" => Some(Self::Pdf),
+            "avif" => Some(Self::Avif),
             _ => None,
         }
     }

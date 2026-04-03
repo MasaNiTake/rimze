@@ -2,6 +2,7 @@ use eframe::egui::{self, Context};
 use std::path::PathBuf;
 use crate::content::{FileType, SortType, SortOrder};
 use crate::ComicViewerAppState;
+use crate::thumbnail::ThumbnailManager;
 
 /// UIからアプリケーションのメインロジックへ送られるコマンドを定義します。
 pub enum UiCommand {
@@ -31,8 +32,11 @@ impl ComicViewerUI {
     pub fn build_ui(&mut self, ctx: &Context, _frame: &mut eframe::Frame, app_state: &mut ComicViewerAppState) -> Vec<UiCommand> {
         let mut commands = Vec::new();
 
+        let monitor_height = ctx.input(|i| i.viewport().monitor_size.map(|s| s.y).unwrap_or(1080.0));
+        let thumb_height = monitor_height * 0.05;
+
         commands.extend(self.top_panel(ctx, app_state));
-        commands.extend(self.side_panel(ctx, app_state));
+        commands.extend(self.side_panel(ctx, app_state, thumb_height));
         commands.extend(self.bottom_panel(ctx, app_state));
         self.central_panel(ctx, app_state);
 
@@ -106,7 +110,7 @@ impl ComicViewerUI {
     }
 
     /// アプリケーションのサイドパネル（漫画ファイルリスト）を構築します。
-    fn side_panel(&mut self, ctx: &Context, app_state: &mut ComicViewerAppState) -> Vec<UiCommand> {
+    fn side_panel(&mut self, ctx: &Context, app_state: &mut ComicViewerAppState, thumb_height: f32) -> Vec<UiCommand> {
         let mut commands = Vec::new();
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
             ui.heading("ファイル一覧");
@@ -125,7 +129,36 @@ impl ComicViewerUI {
                     for path in &directory.files {
                         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
                         let is_selected = app_state.content_file.as_ref().map_or(false, |cf| cf.path == *path);
-                        let response = ui.selectable_label(is_selected, file_name);
+                        let thumb_path = ThumbnailManager::get_thumbnail_path(path);
+
+                        let row_height = thumb_height.max(24.0);
+                        let (rect, response) = ui.allocate_at_least(egui::vec2(ui.available_width(), row_height), egui::Sense::click());
+                        
+                        if ui.is_rect_visible(rect) {
+                            let visuals = ui.style().interact_selectable(&response, is_selected);
+                            if is_selected || response.hovered() {
+                                ui.painter().rect_filled(rect, visuals.rounding(), visuals.bg_fill);
+                            }
+                            
+                            let mut child_ui = ui.new_child(egui::UiBuilder::new()
+                                .max_rect(rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)));
+                            child_ui.add_space(4.0);
+                            
+                            if let Some(tp) = thumb_path {
+                                if tp.exists() {
+                                    child_ui.add(egui::Image::new(format!("file://{}", tp.display()))
+                                        .max_height(thumb_height)
+                                        .corner_radius(2.0));
+                                } else {
+                                    let (rect, _) = child_ui.allocate_exact_size(egui::vec2(thumb_height, thumb_height), egui::Sense::hover());
+                                    child_ui.painter().rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
+                                }
+                            }
+                            child_ui.add_space(8.0);
+                            child_ui.label(egui::RichText::new(file_name).color(visuals.fg_stroke.color));
+                        }
+
                         if response.clicked() {
                             commands.push(UiCommand::OpenFile(path.clone()));
                         }

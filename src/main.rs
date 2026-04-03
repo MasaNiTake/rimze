@@ -60,6 +60,7 @@ struct MyApp {
     update_rx: std::sync::mpsc::Receiver<UiUpdateMsg>,
     last_error: Option<String>,
     is_pointer_over_central_panel: bool,
+    thumbnail_worker: Arc<thumbnail::ThumbnailWorker>,
     app_settings: settings::AppSettings,
 }
 
@@ -215,7 +216,7 @@ impl MyApp{
             directory: None,
             parent_directory:  None,
             max_load_use_memory: max_memory_usage,
-            tokio_rt,
+            tokio_rt: tokio_rt.clone(),
             comic_loader,
             image_cache,
             current_page_index: 0,
@@ -225,6 +226,7 @@ impl MyApp{
             update_rx,
             last_error: None,
             is_pointer_over_central_panel: false,
+            thumbnail_worker: Arc::new(thumbnail::ThumbnailWorker::spawn(&tokio_rt)),
             app_settings,
         }
     }
@@ -461,6 +463,11 @@ impl MyApp{
             }
         } else {
             debug!("Staying in the same directory ({:?}). No reload needed.", container_path);
+            if let Some(dir) = &self.directory {
+                if let Some(idx) = dir.files.iter().position(|p| p == &path) {
+                    self.thumbnail_worker.set_focus(idx);
+                }
+            }
         }
     }
 
@@ -471,11 +478,20 @@ impl MyApp{
         let sort_type = self.sort_files.clone();
         let sort_order = self.sort_order.clone();
 
+        let thumbnail_worker = self.thumbnail_worker.clone();
+        let path_clone_outer = path.clone();
+
         self.tokio_rt.spawn(async move {
-            match comic_loader.list_directory_paths(&path, &sort_type, &sort_order).await {
+            match comic_loader.list_directory_paths(&path_clone_outer, &sort_type, &sort_order).await {
                 Ok(paths) => {
-                    debug!("Loaded directory: {:?}", path);
-                    let dir = content::Directory { path, files: paths };
+                    debug!("Loaded directory: {:?}", path_clone_outer);
+                    
+                    // 親ディレクトリでない場合、サムネイル生成を開始します
+                    if !is_parent {
+                        thumbnail_worker.new_list(paths.clone());
+                    }
+
+                    let dir = content::Directory { path: path_clone_outer, files: paths };
                     let msg = if is_parent {
                         UiUpdateMsg::ParentDirectoryLoaded(dir)
                     } else {
