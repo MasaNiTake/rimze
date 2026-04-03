@@ -112,15 +112,25 @@ impl ComicViewerUI {
     /// アプリケーションのサイドパネル（漫画ファイルリスト）を構築します。
     fn side_panel(&mut self, ctx: &Context, app_state: &mut ComicViewerAppState, thumb_height: f32) -> Vec<UiCommand> {
         let mut commands = Vec::new();
+        let screen_width = ctx.screen_rect().width();
+        let side_min_width = screen_width * 0.02;
+        let central_min_width = screen_width * 0.03;
+        let side_max_width = screen_width - central_min_width;
+
         egui::SidePanel::left("side_panel")
             .default_width(250.0)
+            .min_width(side_min_width)
+            .max_width(side_max_width)
+            .resizable(true)
             .show(ctx, |ui| {
                 ui.heading("ファイル一覧");
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label("🔍");
+                    // 親パネルのサイズを強制せずに、現在のパネル幅に合わせて伸縮させます。
                     ui.add(egui::TextEdit::singleline(app_state.file_filter)
                         .hint_text("ファイル名を検索...")
+                        .desired_width(ui.available_width() - 40.0)
                     );
                     if ui.button("×").on_hover_text("検索をクリア").clicked() {
                         app_state.file_filter.clear();
