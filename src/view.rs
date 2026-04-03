@@ -145,14 +145,19 @@ impl ComicViewerUI {
                                 .layout(egui::Layout::left_to_right(egui::Align::Center)));
                             child_ui.add_space(4.0);
                             
+                            // サムネイル表示エリア（固定サイズでアライメントを確保）
+                            let (thumb_rect, _) = child_ui.allocate_exact_size(egui::vec2(thumb_height, thumb_height), egui::Sense::hover());
+                            let mut thumb_ui = child_ui.new_child(egui::UiBuilder::new()
+                                .max_rect(thumb_rect)
+                                .layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight)));
+
                             if let Some(tp) = thumb_path {
                                 if tp.exists() {
-                                    child_ui.add(egui::Image::new(format!("file://{}", tp.display()))
-                                        .max_height(thumb_height)
+                                    thumb_ui.add(egui::Image::new(format!("file://{}", tp.display()))
+                                        .max_size(egui::vec2(thumb_height, thumb_height))
                                         .corner_radius(2.0));
                                 } else {
-                                    let (rect, _) = child_ui.allocate_exact_size(egui::vec2(thumb_height, thumb_height), egui::Sense::hover());
-                                    child_ui.painter().rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
+                                    thumb_ui.painter().rect_filled(thumb_rect, 2.0, ui.visuals().faint_bg_color);
                                 }
                             }
                             child_ui.add_space(8.0);

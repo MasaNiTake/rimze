@@ -100,7 +100,7 @@ impl ThumbnailManager {
         hasher.update(abs_path.to_string_lossy().as_bytes());
         let hash = hex::encode(hasher.finalize());
         
-        Some(cache_dir.join(format!("{}.avif", hash)))
+        Some(cache_dir.join(format!("{}.webp", hash)))
     }
 
     /// パスからサムネイルを生成して保存します。
@@ -172,13 +172,13 @@ impl ThumbnailManager {
         
         // 重い処理なのでブロッキングを避けるため、呼び出し側で spawn されていることを想定
         if let Ok(img) = image::load_from_memory(&image_data) {
-            let thumbnail = img.thumbnail(256, 256);
+            let thumbnail = img.thumbnail(64, 64);
             
             if let Some(parent) = thumb_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
 
-            match thumbnail.save_with_format(&thumb_path, ImageFormat::Avif) {
+            match thumbnail.save_with_format(&thumb_path, ImageFormat::WebP) {
                 Ok(_) => debug!("Saved thumbnail to {:?}", thumb_path),
                 Err(e) => error!("Failed to save thumbnail: {}", e),
             }
