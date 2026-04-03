@@ -62,6 +62,7 @@ struct MyApp {
     is_pointer_over_central_panel: bool,
     thumbnail_worker: Arc<thumbnail::ThumbnailWorker>,
     app_settings: settings::AppSettings,
+    file_filter: String,
 }
 
 // UI構築のために必要なアプリケーション状態をまとめた構造体
@@ -74,6 +75,7 @@ pub struct ComicViewerAppState<'a> {
     pub directory: &'a Option<content::Directory>,
     pub current_page_index: &'a mut usize,
     pub is_pointer_over_central_panel: &'a mut bool,
+    pub file_filter: &'a mut String,
 }
 
 /// UIの更新メッセージを定義します。
@@ -107,6 +109,7 @@ impl eframe::App for MyApp {
             directory: &self.directory,
             current_page_index: &mut self.current_page_index,
             is_pointer_over_central_panel: &mut self.is_pointer_over_central_panel,
+            file_filter: &mut self.file_filter,
         };
 
         let commands = self.ui_state.build_ui(ctx, frame, &mut app_state);
@@ -228,6 +231,7 @@ impl MyApp{
             is_pointer_over_central_panel: false,
             thumbnail_worker: Arc::new(thumbnail::ThumbnailWorker::spawn(&tokio_rt)),
             app_settings,
+            file_filter: String::new(),
         }
     }
 
@@ -654,10 +658,30 @@ impl MyApp{
         }
     }
 
+    /// フィルタリングされたファイルリストを取得します。
+    fn get_filtered_files(&self) -> Vec<PathBuf> {
+        let Some(dir) = &self.directory else {
+            return Vec::new();
+        };
+        if self.file_filter.is_empty() {
+            return dir.files.clone();
+        }
+        let filter = self.file_filter.to_lowercase();
+        dir.files
+            .iter()
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase().contains(&filter))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect()
+    }
+
     /// 次のコンテンツ（画像/ページ/コンテナ）を表示します。
     pub fn show_next_content(&mut self) {
-        let (file, dir) = match (self.content_file.as_ref(), self.directory.as_ref()) {
-            (Some(f), Some(d)) => (f, d),
+        let file = match self.content_file.as_ref() {
+            Some(f) => f,
             _ => return,
         };
 
@@ -671,11 +695,10 @@ impl MyApp{
         }
 
         // 2. 現在のファイルが属するディレクトリ内の次のファイルに移動します。
-        //    - `dir.files.iter().position(|p| p == &file.path)` で現在のファイルのインデックスを取得します。
-        //    - 次のファイルが存在する場合 (`dir.files.get(current_idx + 1)`)、
-        //      そのパスを `load_and_open_path` に渡し、最初のページから開きます。
-        if let Some(current_idx) = dir.files.iter().position(|p| p == &file.path) {
-            if let Some(next_path) = dir.files.get(current_idx + 1) {
+        //    フィルタリングが有効な場合は、フィルタリングされたリスト内を移動します。
+        let files = self.get_filtered_files();
+        if let Some(current_idx) = files.iter().position(|p| p == &file.path) {
+            if let Some(next_path) = files.get(current_idx + 1) {
                 self.load_and_open_path(next_path.clone(), InitialPage::First);
                 return;
             }
@@ -702,8 +725,8 @@ impl MyApp{
     /// 4. 現在のディレクトリの前のコンテナ（親ディレクトリ内の前のディレクトリまたはZIPファイル）に移動します。
     ///    - 上記の条件が満たされない場合、`move_to_container(false)` を呼び出して前のコンテナに移動します。
     pub fn show_previous_content(&mut self) {
-        let (file, dir) = match (self.content_file.as_ref(), self.directory.as_ref()) {
-            (Some(f), Some(d)) => (f, d),
+        let file = match self.content_file.as_ref() {
+            Some(f) => f,
             _ => return,
         };
 
@@ -716,9 +739,10 @@ impl MyApp{
             }
         }
 
-        if let Some(current_idx) = dir.files.iter().position(|p| p == &file.path) {
+        let files = self.get_filtered_files();
+        if let Some(current_idx) = files.iter().position(|p| p == &file.path) {
             if current_idx > 0 {
-                if let Some(prev_path) = dir.files.get(current_idx - 1) {
+                if let Some(prev_path) = files.get(current_idx - 1) {
                     self.load_and_open_path(prev_path.clone(), InitialPage::Last);
                     return;
                 }

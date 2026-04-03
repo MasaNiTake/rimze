@@ -114,6 +114,17 @@ impl ComicViewerUI {
         let mut commands = Vec::new();
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
             ui.heading("ファイル一覧");
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("🔍");
+                let response = ui.add(egui::TextEdit::singleline(app_state.file_filter)
+                    .hint_text("ファイル名を検索...")
+                    .desired_width(ui.available_width()));
+                if ui.button("×").on_hover_text("検索をクリア").clicked() {
+                    app_state.file_filter.clear();
+                }
+            });
+            ui.add_space(4.0);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if let Some(directory) = &app_state.directory {
                     let mut scroll_to_path = None;
@@ -126,7 +137,17 @@ impl ComicViewerUI {
                         self.last_selected_path = None;
                     }
 
-                    for path in &directory.files {
+                    let filter = app_state.file_filter.to_lowercase();
+                    let filtered_files = directory.files.iter().filter(|path| {
+                        if filter.is_empty() {
+                            return true;
+                        }
+                        path.file_name()
+                            .map(|n| n.to_string_lossy().to_lowercase().contains(&filter))
+                            .unwrap_or(false)
+                    });
+
+                    for path in filtered_files {
                         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
                         let is_selected = app_state.content_file.as_ref().map_or(false, |cf| cf.path == *path);
                         let thumb_path = ThumbnailManager::get_thumbnail_path(path);
