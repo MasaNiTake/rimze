@@ -13,7 +13,7 @@ egui_extras = { version = "*", features = ["all_loaders"] }
 encoding_rs = "0.8.33"
 env_logger = "0.11.2"
 futures = "0.3.30"
-image = { version = "0.24", features = ["png","gif","bmp","webp","avif",] }
+image = { version = "0.24", features = ["png","gif","bmp","webp",] }
 log = "0.4.20"
 mime = "0.3.17"
 mime_guess = "2.0.4"
