@@ -4,6 +4,18 @@ use directories::ProjectDirs;
 use tracing::{debug, error};
 
 use crate::content::{SortOrder, SortType};
+ 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum Language {
+    English,
+    Japanese,
+}
+
+impl Default for Language {
+    fn default() -> Self {
+        Self::English
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -12,6 +24,7 @@ pub struct AppSettings {
     pub max_load_use_memory: usize,
     pub last_open_dir: Option<PathBuf>,
     pub font_name: Option<String>,
+    pub language: Language,
 }
 
 impl Default for AppSettings {
@@ -22,6 +35,7 @@ impl Default for AppSettings {
             max_load_use_memory: 500 * 1024 * 1024, // 500MB
             last_open_dir: directories::UserDirs::new().and_then(|ud| ud.picture_dir().map(|p| p.to_path_buf())),
             font_name: None,
+            language: Language::English,
         }
     }
 }

@@ -76,6 +76,7 @@ pub struct ComicViewerAppState<'a> {
     pub current_page_index: &'a mut usize,
     pub is_pointer_over_central_panel: &'a mut bool,
     pub file_filter: &'a mut String,
+    pub language: &'a mut settings::Language,
 }
 
 /// UIの更新メッセージを定義します。
@@ -110,6 +111,7 @@ impl eframe::App for MyApp {
             current_page_index: &mut self.current_page_index,
             is_pointer_over_central_panel: &mut self.is_pointer_over_central_panel,
             file_filter: &mut self.file_filter,
+            language: &mut self.app_settings.language,
         };
 
         let commands = self.ui_state.build_ui(ctx, frame, &mut app_state);
@@ -312,6 +314,10 @@ impl MyApp{
             UiCommand::SetMaxMemory(bytes) => {
                 self.max_load_use_memory = bytes;
                 self.image_cache.lock().unwrap().set_max_memory_usage(bytes);
+                self.update_and_save_settings();
+            }
+            UiCommand::SetLanguage(lang) => {
+                self.app_settings.language = lang;
                 self.update_and_save_settings();
             }
         }

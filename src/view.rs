@@ -12,6 +12,7 @@ pub enum UiCommand {
     SetSortAndOrder(SortType, SortOrder),
     ChangePage(usize),
     SetMaxMemory(usize),
+    SetLanguage(crate::settings::Language),
 }
 
 pub struct ComicViewerUI {
@@ -25,6 +26,13 @@ impl ComicViewerUI {
         Self {
             last_open_dir,
             last_selected_path: None,
+        }
+    }
+
+    fn tr<'a>(&self, lang: &crate::settings::Language, ja: &'a str, en: &'a str) -> &'a str {
+        match lang {
+            crate::settings::Language::Japanese => ja,
+            crate::settings::Language::English => en,
         }
     }
 
@@ -48,58 +56,69 @@ impl ComicViewerUI {
         let mut commands = Vec::new();
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("ファイル", |ui| {
-                    if ui.button("開く").clicked() {
+                ui.menu_button(self.tr(app_state.language, "ファイル", "File"), |ui| {
+                    if ui.button(self.tr(app_state.language, "開く", "Open")).clicked() {
                         commands.push(UiCommand::OpenFileDialog);
                         ui.close_menu();
                     }
-                    if ui.button("閉じる").clicked() {
+                    if ui.button(self.tr(app_state.language, "閉じる", "Close")).clicked() {
                         commands.push(UiCommand::CloseFile);
                         ui.close_menu();
                     }
                 });
-                ui.menu_button("設定", |ui| {
-                    ui.menu_button("ソート順", |ui| {
-                        ui.menu_button("ファイル名", |ui| {
+                ui.menu_button(self.tr(app_state.language, "設定", "Settings"), |ui| {
+                    ui.menu_button(self.tr(app_state.language, "ソート順", "Sort Order"), |ui| {
+                        ui.menu_button(self.tr(app_state.language, "ファイル名", "File Name"), |ui| {
                             let is_asc = *app_state.sort_files == SortType::FileName && *app_state.sort_order == SortOrder::Ascending;
-                            if ui.radio(is_asc, "昇順").clicked() {
+                            if ui.radio(is_asc, self.tr(app_state.language, "昇順", "Ascending")).clicked() {
                                 commands.push(UiCommand::SetSortAndOrder(SortType::FileName, SortOrder::Ascending));
                                 ui.close();
                             }
                             let is_desc = *app_state.sort_files == SortType::FileName && *app_state.sort_order == SortOrder::Descending;
-                            if ui.radio(is_desc, "降順").clicked() {
+                            if ui.radio(is_desc, self.tr(app_state.language, "降順", "Descending")).clicked() {
                                 commands.push(UiCommand::SetSortAndOrder(SortType::FileName, SortOrder::Descending));
                                 ui.close();
                             }
                         });
-                        ui.menu_button("更新日時", |ui| {
+                        ui.menu_button(self.tr(app_state.language, "更新日時", "Modified Date"), |ui| {
                             let is_asc = *app_state.sort_files == SortType::ModifiedDate && *app_state.sort_order == SortOrder::Ascending;
-                            if ui.radio(is_asc, "昇順").clicked() {
+                            if ui.radio(is_asc, self.tr(app_state.language, "昇順", "Ascending")).clicked() {
                                 commands.push(UiCommand::SetSortAndOrder(SortType::ModifiedDate, SortOrder::Ascending));
                                 ui.close();
                             }
                             let is_desc = *app_state.sort_files == SortType::ModifiedDate && *app_state.sort_order == SortOrder::Descending;
-                            if ui.radio(is_desc, "降順").clicked() {
+                            if ui.radio(is_desc, self.tr(app_state.language, "降順", "Descending")).clicked() {
                                 commands.push(UiCommand::SetSortAndOrder(SortType::ModifiedDate, SortOrder::Descending));
                                 ui.close();
                             }
                         });
-                        ui.menu_button("作成日時", |ui| {
+                        ui.menu_button(self.tr(app_state.language, "作成日時", "Creation Date"), |ui| {
                             let is_asc = *app_state.sort_files == SortType::CreationDate && *app_state.sort_order == SortOrder::Ascending;
-                            if ui.radio(is_asc, "昇順").clicked() {
+                            if ui.radio(is_asc, self.tr(app_state.language, "昇順", "Ascending")).clicked() {
                                 commands.push(UiCommand::SetSortAndOrder(SortType::CreationDate, SortOrder::Ascending));
                                 ui.close();
                             }
                             let is_desc = *app_state.sort_files == SortType::CreationDate && *app_state.sort_order == SortOrder::Descending;
-                            if ui.radio(is_desc, "降順").clicked() {
+                            if ui.radio(is_desc, self.tr(app_state.language, "降順", "Descending")).clicked() {
                                 commands.push(UiCommand::SetSortAndOrder(SortType::CreationDate, SortOrder::Descending));
                                 ui.close();
                             }
                         });
                     });
+
+                    ui.menu_button(self.tr(app_state.language, "言語", "Language"), |ui| {
+                        if ui.radio(*app_state.language == crate::settings::Language::English, "English").clicked() {
+                            commands.push(UiCommand::SetLanguage(crate::settings::Language::English));
+                            ui.close();
+                        }
+                        if ui.radio(*app_state.language == crate::settings::Language::Japanese, "日本語").clicked() {
+                            commands.push(UiCommand::SetLanguage(crate::settings::Language::Japanese));
+                            ui.close();
+                        }
+                    });
                     
                     let mut max_mem_mb = *app_state.max_load_use_memory / (1024 * 1024);
-                    let slider = egui::Slider::new(&mut max_mem_mb, 10..=1000).text("最大キャッシュ (MB)");
+                    let slider = egui::Slider::new(&mut max_mem_mb, 10..=1000).text(self.tr(app_state.language, "最大キャッシュ (MB)", "Max Cache (MB)"));
                     if ui.add(slider).changed() {
                         commands.push(UiCommand::SetMaxMemory(max_mem_mb * 1024 * 1024));
                     }
@@ -123,16 +142,16 @@ impl ComicViewerUI {
             .max_width(side_max_width)
             .resizable(true)
             .show(ctx, |ui| {
-                ui.heading("ファイル一覧");
+                ui.heading(self.tr(app_state.language, "ファイル一覧", "File List"));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label("🔍");
                     // 親パネルのサイズを強制せずに、現在のパネル幅に合わせて伸縮させます。
                     ui.add(egui::TextEdit::singleline(app_state.file_filter)
-                        .hint_text("ファイル名を検索...")
+                        .hint_text(self.tr(app_state.language, "ファイル名を検索...", "Search files..."))
                         .desired_width(ui.available_width() - 40.0)
                     );
-                    if ui.button("×").on_hover_text("検索をクリア").clicked() {
+                    if ui.button("×").on_hover_text(self.tr(app_state.language, "検索をクリア", "Clear search")).clicked() {
                         app_state.file_filter.clear();
                     }
                 });
@@ -205,7 +224,7 @@ impl ComicViewerUI {
                         }
                     }
                 } else {
-                    ui.label("ディレクトリが選択されていません。");
+                    ui.label(self.tr(app_state.language, "ディレクトリが選択されていません。", "No directory selected."));
                     self.last_selected_path = None;
                 }
             });
@@ -226,7 +245,7 @@ impl ComicViewerUI {
                 });
             } else {
                 ui.centered_and_justified(|ui| {
-                    ui.label("画像をドラッグ＆ドロップするか、ファイルメニューから開いてください。");
+                    ui.label(self.tr(app_state.language, "画像をドラッグ＆ドロップするか、ファイルメニューから開いてください。", "Drag & drop images or open from File menu."));
                 });
             }
         }).response;
@@ -248,7 +267,7 @@ impl ComicViewerUI {
                     };
                     (name.to_string(), current, total)
                 } else {
-                    ("ファイルが開かれていません".to_string(), 0, 1)
+                    (self.tr(app_state.language, "ファイルが開かれていません", "No file open").to_string(), 0, 1)
                 };
 
                 ui.label(current_file_label);
@@ -258,7 +277,7 @@ impl ComicViewerUI {
 
                     let mut page_slider_index = *app_state.current_page_index;
                     let slider = egui::Slider::new(&mut page_slider_index, 0..=max_pages.saturating_sub(1))
-                        .text("ページ")
+                        .text(self.tr(app_state.language, "ページ", "Page"))
                         .show_value(false);
 
                     if ui.add_enabled(max_pages > 1, slider).changed() {
