@@ -196,14 +196,50 @@ impl MyApp{
         let (update_tx, update_rx) = std::sync::mpsc::channel();
 
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert("ja_font".to_owned(),
-            Arc::new(egui::FontData::from_static(include_bytes!("../fonts/PlemolJPConsoleNF-Regular.ttf"))));
-        fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "ja_font".to_owned());
-        fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().push("ja_font".to_owned());
-        cc.egui_ctx.set_fonts(fonts);
-
+        
         let app_settings = settings::AppSettings::load();
+
+        let mut fonts = egui::FontDefinitions::default();
+        let font_filename = app_settings.font_name.as_deref().unwrap_or("PlemolJPConsoleNF-Regular.ttf");
+        
+        // 検索するパスのリスト
+        let mut potential_font_paths = vec![
+            std::path::PathBuf::from("fonts").join(font_filename), // CWD/fonts/
+        ];
+        
+        // 実行ファイルがあるディレクトリの fonts/ フォルダも確認
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                potential_font_paths.push(exe_dir.join("fonts").join(font_filename));
+            }
+        }
+        
+        // 設定ディレクトリの fonts/ フォルダも確認
+        if let Some(config_dir) = settings::AppSettings::get_config_dir() {
+            potential_font_paths.push(config_dir.join("fonts").join(font_filename));
+        }
+
+        let mut font_loaded = false;
+        for path in potential_font_paths {
+            if path.exists() {
+                if let Ok(font_data) = std::fs::read(&path) {
+                    debug!("Found font at {:?}", path);
+                    fonts.font_data.insert("ja_font".to_owned(),
+                        Arc::new(egui::FontData::from_owned(font_data)));
+                    
+                    fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "ja_font".to_owned());
+                    fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().push("ja_font".to_owned());
+                    font_loaded = true;
+                    break;
+                }
+            }
+        }
+
+        if font_loaded {
+            cc.egui_ctx.set_fonts(fonts);
+        } else {
+            debug!("Japanese font (PlemolJP) not found. Using default fonts.");
+        }
         
         let tokio_rt = Arc::new(runtime::Builder::new_multi_thread().enable_all().build().unwrap());
         let max_memory_usage = app_settings.max_load_use_memory;

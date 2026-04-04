@@ -11,6 +11,7 @@ pub struct AppSettings {
     pub sort_order: SortOrder,
     pub max_load_use_memory: usize,
     pub last_open_dir: Option<PathBuf>,
+    pub font_name: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -20,6 +21,7 @@ impl Default for AppSettings {
             sort_order: SortOrder::Ascending,
             max_load_use_memory: 500 * 1024 * 1024, // 500MB
             last_open_dir: directories::UserDirs::new().and_then(|ud| ud.picture_dir().map(|p| p.to_path_buf())),
+            font_name: None,
         }
     }
 }
