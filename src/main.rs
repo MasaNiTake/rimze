@@ -99,6 +99,12 @@ pub enum InitialPage {
 
 
 impl eframe::App for MyApp {
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // eframe 0.34+ requires the `ui` method to be implemented.
+        // However, we completely override the `update` method, which is the main entry point called by the eframe runner,
+        // so this dummy `ui` method is never actually executed.
+    }
+
     /// アプリケーションのUIを更新します。
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let mut app_state = ComicViewerAppState {
@@ -399,7 +405,7 @@ impl MyApp{
     }
 
     fn handle_image_navigation(&mut self, ctx: &egui::Context){
-        let scroll_delta = ctx.input(|i| i.raw_scroll_delta.y);
+        let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y);
         if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) || (self.is_pointer_over_central_panel && scroll_delta < 0.0) {
             self.show_next_content();
         }
