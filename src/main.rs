@@ -405,7 +405,15 @@ impl MyApp{
     }
 
     fn handle_image_navigation(&mut self, ctx: &egui::Context){
-        let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y);
+        let scroll_delta: f32 = ctx.input(|i| {
+            i.events.iter().filter_map(|e| {
+                if let egui::Event::MouseWheel { delta, .. } = e {
+                    Some(delta.y)
+                } else {
+                    None
+                }
+            }).sum()
+        });
         if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) || (self.is_pointer_over_central_panel && scroll_delta < 0.0) {
             self.show_next_content();
         }
