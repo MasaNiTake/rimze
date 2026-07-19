@@ -6,23 +6,21 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-async_zip = { version = "*", features = ["full"] }
 chrono = "0.4.39"
 eframe = "*"
 egui_extras = { version = "*", features = ["all_loaders"] }
 encoding_rs = "0.8.33"
-env_logger = "0.11.2"
 futures = "0.3.30"
 image = { version = "0.24", features = ["png","gif","bmp","webp",] }
-log = "0.4.20"
+# 真の LRU キャッシュ実装（O(1) の put/get/pop とアクセス順序管理）
+lru = "*"
 mime = "0.3.17"
 mime_guess = "2.0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "*"
-simplelog = "0.12.2"
 tokio = { version = "*", features = ["full"] }
 tracing = "0.1.40"
-tracing-subscriber = "0.3.18"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tokio-util = { version = "*", features = ["compat"] }
 zip = "0.6.6"
 lopdf = "0.30.0"

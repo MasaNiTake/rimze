@@ -1,36 +1,40 @@
-use std::{path::PathBuf, sync::{Arc, Mutex}};
 use eframe::egui;
+use std::sync::mpsc::{Receiver, Sender};
+use std::{path::PathBuf, sync::Arc};
 use tokio::runtime;
-use tracing::debug;
-use std::sync::mpsc::{Sender, Receiver};
+use tracing::{debug, info};
+use tracing_subscriber::EnvFilter;
 
 mod content;
-mod view;
 mod settings;
 mod thumbnail;
+mod view;
 
-use content::{CacheKey, ComicFile, FileType, SortType, SortOrder, Directory, ImageExtension, FileExtension};
+use content::{
+    CacheKey, ComicFile, Directory, FileExtension, FileType, ImageExtension, SortOrder, SortType,
+};
 use view::UiCommand;
-
 
 /// アプリケーションのエントリーポイント。
 /// Eguiアプリケーションを初期化し、実行します。
 fn main() -> Result<(), eframe::Error> {
-    // tracingサブスクライバーを設定し、エラーレベル以上のログを出力します。
-    let subscriber = tracing_subscriber::FmtSubscriber::builder()
-        .with_max_level(tracing::Level::DEBUG)
-        .finish();
+    // RUST_LOG 環境変数でログレベルを調整可能にする。
+    // 未設定時のデフォルトは INFO レベルとする。
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("setting default subscriber failed");
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .try_init()
+        .expect("トレーシング・サブスクライバーの初期化に失敗しました");
+
+    info!("RIMZE を起動します");
 
     // Eframeのネイティブオプションを設定します。
     let options = eframe::NativeOptions {
-    viewport: egui::ViewportBuilder::default()
-    .with_inner_size([800.0, 600.0])
-    .with_drag_and_drop(true)
-    ,
-    ..Default::default()
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([800.0, 600.0])
+            .with_drag_and_drop(true),
+        ..Default::default()
     };
     // Eframeアプリケーションを実行します。
     eframe::run_native(
@@ -52,7 +56,8 @@ struct MyApp {
     max_load_use_memory: usize,
     tokio_rt: Arc<runtime::Runtime>,
     comic_loader: Arc<content::ComicLoader>,
-    image_cache: Arc<Mutex<content::ImageCache>>,
+    // UI スレッドからは try_lock、非同期タスクからは lock().await で取得するため tokio::sync::Mutex を使用。
+    image_cache: Arc<tokio::sync::Mutex<content::ImageCache>>,
     current_page_index: usize,
     current_directory_path: Option<PathBuf>,
     ui_state: view::ComicViewerUI,
@@ -63,6 +68,8 @@ struct MyApp {
     thumbnail_worker: Arc<thumbnail::ThumbnailWorker>,
     app_settings: settings::AppSettings,
     file_filter: String,
+    /// キャッシュ使用量ログの最終出力時刻。約1秒に1回の出力に間引きするために使用。
+    last_cache_log: std::time::Instant,
 }
 
 // UI構築のために必要なアプリケーション状態をまとめた構造体
@@ -96,7 +103,6 @@ pub enum InitialPage {
     First,
     Last,
 }
-
 
 impl eframe::App for MyApp {
     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -160,7 +166,11 @@ impl eframe::App for MyApp {
                     self.directory = Some(directory);
                     if let Some(dir) = &self.directory {
                         if let Some(first_file) = dir.files.iter().find(|path| {
-                            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+                            let ext = path
+                                .extension()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("")
+                                .to_lowercase();
                             ImageExtension::from_str(&ext).is_some()
                         }) {
                             debug!("Auto-opening first file in new directory: {:?}", first_file);
@@ -176,13 +186,28 @@ impl eframe::App for MyApp {
                 }
             }
         }
+        // 約1秒に1回、キャッシュ使用量を debug ログ出力する。
+        // 更新ループは高頻度で呼ばれるため、負荷を抑えるために間引きを行う。
+        // ※プロセス全体の RSS は `top` コマンド等で確認可能なため、ここでは出力しない。
+        if self.last_cache_log.elapsed() >= std::time::Duration::from_secs(1) {
+            self.last_cache_log = std::time::Instant::now();
+            // UI スレッド（同期コンテキスト）から呼ばれるため try_lock を使用。
+            // ロック取得失敗時はそのフレームのログ出力をスキップする（表示には影響しない）。
+            if let Ok(cache) = self.image_cache.try_lock() {
+                let cache_mb = cache.current_memory_usage() / 1024 / 1024;
+                debug!("Cache usage: {} MB", cache_mb);
+            }
+        }
+
         if let Some(error) = &self.last_error {
             egui::Area::new("error_toast".into())
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
                 .show(ctx, |ui| {
                     let frame = egui::Frame::popup(ui.style());
                     frame.show(ui, |ui| {
-                        ui.label(egui::RichText::new(error).color(ui.style().visuals.error_fg_color));
+                        ui.label(
+                            egui::RichText::new(error).color(ui.style().visuals.error_fg_color),
+                        );
                     });
                 });
         }
@@ -199,29 +224,32 @@ impl MyApp {
     }
 }
 
-impl MyApp{
+impl MyApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (update_tx, update_rx) = std::sync::mpsc::channel();
 
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        
+
         let app_settings = settings::AppSettings::load();
 
         let mut fonts = egui::FontDefinitions::default();
-        let font_filename = app_settings.font_name.as_deref().unwrap_or("PlemolJPConsoleNF-Regular.ttf");
-        
+        let font_filename = app_settings
+            .font_name
+            .as_deref()
+            .unwrap_or("PlemolJPConsoleNF-Regular.ttf");
+
         // 検索するパスのリスト
         let mut potential_font_paths = vec![
             std::path::PathBuf::from("fonts").join(font_filename), // CWD/fonts/
         ];
-        
+
         // 実行ファイルがあるディレクトリの fonts/ フォルダも確認
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
                 potential_font_paths.push(exe_dir.join("fonts").join(font_filename));
             }
         }
-        
+
         // 設定ディレクトリの fonts/ フォルダも確認
         if let Some(config_dir) = settings::AppSettings::get_config_dir() {
             potential_font_paths.push(config_dir.join("fonts").join(font_filename));
@@ -232,11 +260,21 @@ impl MyApp{
             if path.exists() {
                 if let Ok(font_data) = std::fs::read(&path) {
                     debug!("Found font at {:?}", path);
-                    fonts.font_data.insert("ja_font".to_owned(),
-                        Arc::new(egui::FontData::from_owned(font_data)));
-                    
-                    fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "ja_font".to_owned());
-                    fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().push("ja_font".to_owned());
+                    fonts.font_data.insert(
+                        "ja_font".to_owned(),
+                        Arc::new(egui::FontData::from_owned(font_data)),
+                    );
+
+                    fonts
+                        .families
+                        .get_mut(&egui::FontFamily::Proportional)
+                        .unwrap()
+                        .insert(0, "ja_font".to_owned());
+                    fonts
+                        .families
+                        .get_mut(&egui::FontFamily::Monospace)
+                        .unwrap()
+                        .push("ja_font".to_owned());
                     font_loaded = true;
                     break;
                 }
@@ -248,11 +286,21 @@ impl MyApp{
         } else {
             debug!("Japanese font (PlemolJP) not found. Using default fonts.");
         }
-        
-        let tokio_rt = Arc::new(runtime::Builder::new_multi_thread().enable_all().build().unwrap());
+
+        let tokio_rt = Arc::new(
+            runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
         let max_memory_usage = app_settings.max_load_use_memory;
-        let image_cache = Arc::new(Mutex::new(content::ImageCache::new(max_memory_usage)));
-        let comic_loader = Arc::new(content::ComicLoader::new(tokio_rt.clone(), image_cache.clone()));
+        let image_cache = Arc::new(tokio::sync::Mutex::new(content::ImageCache::new(
+            max_memory_usage,
+        )));
+        let comic_loader = Arc::new(content::ComicLoader::new(
+            tokio_rt.clone(),
+            image_cache.clone(),
+        ));
 
         Self {
             dropped_files: Default::default(),
@@ -261,7 +309,7 @@ impl MyApp{
             sort_files: app_settings.sort_files.clone(),
             sort_order: app_settings.sort_order.clone(),
             directory: None,
-            parent_directory:  None,
+            parent_directory: None,
             max_load_use_memory: max_memory_usage,
             tokio_rt: tokio_rt.clone(),
             comic_loader,
@@ -276,6 +324,7 @@ impl MyApp{
             thumbnail_worker: Arc::new(thumbnail::ThumbnailWorker::spawn(&tokio_rt)),
             app_settings,
             file_filter: String::new(),
+            last_cache_log: std::time::Instant::now(),
         }
     }
 
@@ -284,8 +333,19 @@ impl MyApp{
         match command {
             UiCommand::OpenFileDialog => {
                 let file = rfd::FileDialog::new()
-                    .add_filter("Image Files", &FileExtension::as_slice().iter().map(|ext| ext.as_str()).collect::<Vec<_>>())
-                    .set_directory(self.ui_state.last_open_dir.as_deref().unwrap_or(&PathBuf::from("/")))
+                    .add_filter(
+                        "Image Files",
+                        &FileExtension::as_slice()
+                            .iter()
+                            .map(|ext| ext.as_str())
+                            .collect::<Vec<_>>(),
+                    )
+                    .set_directory(
+                        self.ui_state
+                            .last_open_dir
+                            .as_deref()
+                            .unwrap_or(&PathBuf::from("/")),
+                    )
                     .pick_file();
 
                 if let Some(path) = file {
@@ -319,7 +379,15 @@ impl MyApp{
             }
             UiCommand::SetMaxMemory(bytes) => {
                 self.max_load_use_memory = bytes;
-                self.image_cache.lock().unwrap().set_max_memory_usage(bytes);
+                // UI スレッドから呼ばれるため try_lock を使用。
+                // ロック取得失敗時はデバッグログを出力し、次フレーム以降で再試行の余地を残す。
+                match self.image_cache.try_lock() {
+                    Ok(mut cache) => cache.set_max_memory_usage(bytes),
+                    Err(e) => debug!(
+                        "image_cache の try_lock に失敗したため set_max_memory_usage をスキップします: {}",
+                        e
+                    ),
+                }
                 self.update_and_save_settings();
             }
             UiCommand::SetLanguage(lang) => {
@@ -348,7 +416,8 @@ impl MyApp{
                 }
                 text
             });
-            let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("file_drop_target")));
+            let painter =
+                ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("file_drop_target")));
             let screen_rect = ctx.screen_rect();
             painter.rect_filled(screen_rect, 0.0, Color32::from_black_alpha(192));
             painter.text(
@@ -374,9 +443,15 @@ impl MyApp{
                         let sort_order = self.sort_order.clone();
                         let path_clone = path.clone();
                         self.tokio_rt.spawn(async move {
-                            match comic_loader.list_directory_paths(&path_clone, &sort_type, &sort_order).await {
+                            match comic_loader
+                                .list_directory_paths(&path_clone, &sort_type, &sort_order)
+                                .await
+                            {
                                 Ok(paths) => {
-                                    let dir = content::Directory { path: path_clone, files: paths };
+                                    let dir = content::Directory {
+                                        path: path_clone,
+                                        files: paths,
+                                    };
                                     // このアクションに対応する特定のメッセージを送信します。
                                     tx.send(UiUpdateMsg::DirectoryChangedFromDrop(dir)).ok();
                                 }
@@ -387,11 +462,17 @@ impl MyApp{
                         });
                     } else {
                         // 画像ファイルの場合は直接開く
-                        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+                        let ext = path
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
                         if ImageExtension::from_str(&ext).is_some() {
                             debug!("Dropped image file: {:?}", path);
                             self.open_new_file(path.clone());
-                        } else if FileExtension::from_str(&ext).is_some_and(|ext| ext == FileExtension::Zip) {
+                        } else if FileExtension::from_str(&ext)
+                            .is_some_and(|ext| ext == FileExtension::Zip)
+                        {
                             // ZIPファイルは直接開く
                             debug!("Dropped zip file: {:?}", path);
                             self.open_new_file(path.clone());
@@ -404,34 +485,45 @@ impl MyApp{
         }
     }
 
-    fn handle_image_navigation(&mut self, ctx: &egui::Context){
+    fn handle_image_navigation(&mut self, ctx: &egui::Context) {
         let scroll_delta: f32 = ctx.input(|i| {
-            i.events.iter().filter_map(|e| {
-                if let egui::Event::MouseWheel { delta, .. } = e {
-                    Some(delta.y)
-                } else {
-                    None
-                }
-            }).sum()
+            i.events
+                .iter()
+                .filter_map(|e| {
+                    if let egui::Event::MouseWheel { delta, .. } = e {
+                        Some(delta.y)
+                    } else {
+                        None
+                    }
+                })
+                .sum()
         });
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) || (self.is_pointer_over_central_panel && scroll_delta < 0.0) {
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight))
+            || (self.is_pointer_over_central_panel && scroll_delta < 0.0)
+        {
             self.show_next_content();
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) || (self.is_pointer_over_central_panel && scroll_delta > 0.0) {
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft))
+            || (self.is_pointer_over_central_panel && scroll_delta > 0.0)
+        {
             self.show_previous_content();
         }
     }
 
     /// ドラッグ＆ドロップによって新しいファイルをオープンする処理を行います。
     fn open_new_file(&mut self, path: PathBuf) {
-        self.image_cache.lock().unwrap().clear();
+        // UI スレッドから呼ばれるため try_lock を使用。
+        // ロック取得失敗時はスキップ（新しいファイル読込時にキャッシュが再構築されるため実害は限定的）。
+        if let Ok(mut cache) = self.image_cache.try_lock() {
+            cache.clear();
+        }
         self.content_file = None;
         self.directory = None;
         self.parent_directory = None;
         self.current_image_handle = None;
         self.load_and_open_path(path, InitialPage::First);
     }
-    
+
     /// パスからファイルを読み込んで開く処理を共通化
     fn load_and_open_path(&self, path: PathBuf, initial_page: InitialPage) {
         let comic_loader = self.comic_loader.clone();
@@ -445,26 +537,46 @@ impl MyApp{
             let is_dir = if let Ok(metadata) = metadata_result {
                 metadata.is_dir()
             } else {
-                tx.send(UiUpdateMsg::Error(format!("Failed to get metadata for {:?}", path))).ok();
+                tx.send(UiUpdateMsg::Error(format!(
+                    "Failed to get metadata for {:?}",
+                    path
+                )))
+                .ok();
                 return;
             };
 
             if is_dir {
                 // ディレクトリです。内容をリストアップし、最初または最後の画像ファイルを開きます。
-                match comic_loader.list_directory_paths(&path, &sort_type, &sort_order).await {
+                match comic_loader
+                    .list_directory_paths(&path, &sort_type, &sort_order)
+                    .await
+                {
                     Ok(paths) => {
                         let file_to_open = match initial_page {
-                            InitialPage::First => paths.iter().find(|p| ImageExtension::from_str(p.extension().and_then(|s| s.to_str()).unwrap_or("")).is_some()),
-                            InitialPage::Last => paths.iter().rfind(|p| ImageExtension::from_str(p.extension().and_then(|s| s.to_str()).unwrap_or("")).is_some()),
+                            InitialPage::First => paths.iter().find(|p| {
+                                ImageExtension::from_str(
+                                    p.extension().and_then(|s| s.to_str()).unwrap_or(""),
+                                )
+                                .is_some()
+                            }),
+                            InitialPage::Last => paths.iter().rfind(|p| {
+                                ImageExtension::from_str(
+                                    p.extension().and_then(|s| s.to_str()).unwrap_or(""),
+                                )
+                                .is_some()
+                            }),
                         };
 
                         if let Some(p) = file_to_open {
                             // 画像ファイルが見つかりました。読み込みます。
                             match comic_loader.load_comic_file(p.clone()).await {
                                 Ok(comic_file) => {
-                                    tx.send(UiUpdateMsg::ComicFileLoaded(comic_file, initial_page)).ok();
+                                    tx.send(UiUpdateMsg::ComicFileLoaded(comic_file, initial_page))
+                                        .ok();
                                 }
-                                Err(e) => { tx.send(UiUpdateMsg::Error(e.to_string())).ok(); }
+                                Err(e) => {
+                                    tx.send(UiUpdateMsg::Error(e.to_string())).ok();
+                                }
                             }
                         } else {
                             // ディレクトリ内に画像ファイルがありません。ディレクトリ自体を読み込みます。
@@ -472,13 +584,16 @@ impl MyApp{
                             tx.send(UiUpdateMsg::DirectoryLoaded(dir)).ok();
                         }
                     }
-                    Err(e) => { tx.send(UiUpdateMsg::Error(e.to_string())).ok(); }
+                    Err(e) => {
+                        tx.send(UiUpdateMsg::Error(e.to_string())).ok();
+                    }
                 }
             } else {
                 // ファイルです。
                 match comic_loader.load_comic_file(path).await {
                     Ok(comic_file) => {
-                        tx.send(UiUpdateMsg::ComicFileLoaded(comic_file, initial_page)).ok();
+                        tx.send(UiUpdateMsg::ComicFileLoaded(comic_file, initial_page))
+                            .ok();
                     }
                     Err(e) => {
                         tx.send(UiUpdateMsg::Error(e.to_string())).ok();
@@ -492,27 +607,33 @@ impl MyApp{
     fn open_comic_file(&mut self, file: ComicFile, initial_page: InitialPage) {
         debug!("Opening comic file: {:?}", file.path);
         let path = file.path.clone();
-        
+
         self.current_page_index = match initial_page {
             InitialPage::First => 0,
             InitialPage::Last => match &file.file_type {
                 FileType::Zip(zip_file) => zip_file.entries.len().saturating_sub(1),
                 _ => 0,
-            }
+            },
         };
         self.content_file = Some(file);
         self.load_image_for_display();
-        
+
         let container_path = if path.is_dir() {
             path.clone()
         } else {
             path.parent().unwrap_or(&path).to_path_buf()
         };
-        
-        let needs_reload = self.directory.as_ref().map_or(true, |d| d.path != container_path);
+
+        let needs_reload = self
+            .directory
+            .as_ref()
+            .map_or(true, |d| d.path != container_path);
 
         if needs_reload {
-            debug!("Directory has changed to {:?}. Reloading file list.", container_path);
+            debug!(
+                "Directory has changed to {:?}. Reloading file list.",
+                container_path
+            );
             self.current_directory_path = Some(container_path.clone());
             self.load_directory_content(container_path.clone(), false);
 
@@ -522,7 +643,10 @@ impl MyApp{
                 self.parent_directory = None;
             }
         } else {
-            debug!("Staying in the same directory ({:?}). No reload needed.", container_path);
+            debug!(
+                "Staying in the same directory ({:?}). No reload needed.",
+                container_path
+            );
             if let Some(dir) = &self.directory {
                 if let Some(idx) = dir.files.iter().position(|p| p == &path) {
                     self.thumbnail_worker.set_focus(idx);
@@ -542,16 +666,22 @@ impl MyApp{
         let path_clone_outer = path.clone();
 
         self.tokio_rt.spawn(async move {
-            match comic_loader.list_directory_paths(&path_clone_outer, &sort_type, &sort_order).await {
+            match comic_loader
+                .list_directory_paths(&path_clone_outer, &sort_type, &sort_order)
+                .await
+            {
                 Ok(paths) => {
                     debug!("Loaded directory: {:?}", path_clone_outer);
-                    
+
                     // 親ディレクトリでない場合、サムネイル生成を開始します
                     if !is_parent {
                         thumbnail_worker.new_list(paths.clone());
                     }
 
-                    let dir = content::Directory { path: path_clone_outer, files: paths };
+                    let dir = content::Directory {
+                        path: path_clone_outer,
+                        files: paths,
+                    };
                     let msg = if is_parent {
                         UiUpdateMsg::ParentDirectoryLoaded(dir)
                     } else {
@@ -573,16 +703,26 @@ impl MyApp{
             None => return,
         };
         let page_index = self.current_page_index;
-        
+
         let key = match &file.file_type {
             FileType::Image(_) => CacheKey::File(file.path.clone()),
             FileType::Zip(_) => CacheKey::ZipEntry(file.path.clone(), page_index),
             _ => return,
         };
 
-        if let Some(image_data) = self.image_cache.lock().unwrap().get(&key) {
+        // UI スレッド（同期コンテキスト）から呼ばれるため try_lock を使用。
+        // ロック取得失敗時は「キャッシュミス扱いでソースから読み込む」に倒し、表示遅延を防ぐ。
+        let cached = self
+            .image_cache
+            .try_lock()
+            .ok()
+            .and_then(|mut cache| cache.get(&key));
+
+        if let Some(image_data) = cached {
             debug!("Cache hit for {:?}", key);
-            self.decode_and_display(image_data.clone()); // Clone to pass it for thumbnail if needed
+            // `image_data` は `Arc<Vec<u8>>`。デコードは `&[u8]` で借用し、フルコピーは発生しない。
+            self.decode_and_display(image_data.as_slice());
+            // サムネイル生成タスクへは `Arc` をムーブ（参照カウント増加以外のコストなし）。
             self.try_trigger_thumbnail(file, page_index, image_data);
         } else {
             debug!("Cache miss for {:?}. Loading from source.", key);
@@ -591,9 +731,13 @@ impl MyApp{
 
         self.update_cache_and_prefetch(&key);
     }
-    
+
     /// サムネイル生成をバックグラウンドで試行します。
-    fn try_trigger_thumbnail(&self, file: ComicFile, page_index: usize, image_data: Vec<u8>) {
+    ///
+    /// `image_data` は `Arc<Vec<u8>>` を受け取り、spawn タスクへそのままムーブする。
+    /// `&[u8]` ではなく `Arc` で受け渡すことで、UI スレッドでのフルコピーを回避する
+    /// （spawn タスクは `'static` な所有権データを必要とするため）。
+    fn try_trigger_thumbnail(&self, file: ComicFile, page_index: usize, image_data: Arc<Vec<u8>>) {
         // ZIPの場合は最初のページのみ、画像の場合はその画像のみ
         let should_generate = match &file.file_type {
             FileType::Image(_) => true,
@@ -604,11 +748,13 @@ impl MyApp{
         if should_generate {
             let path = file.path.clone();
             self.tokio_rt.spawn(async move {
-                thumbnail::ThumbnailManager::ensure_thumbnail(path, image_data);
+                // ensure_thumbnail が Vec<u8> を取る現仕様のため、ワーカースレッド側で Vec 化する
+                // （UI スレッドではないため、ここでのフルコピーは許容される）。
+                thumbnail::ThumbnailManager::ensure_thumbnail(path, image_data.as_slice().to_vec());
             });
         }
     }
-    
+
     /// ソースから画像を直接読み込み、表示し、キャッシュに格納する
     fn load_from_source_and_display(&self, file: ComicFile, page_index: usize, key: CacheKey) {
         let comic_loader = self.comic_loader.clone();
@@ -618,25 +764,35 @@ impl MyApp{
         self.tokio_rt.spawn(async move {
             let image_data_result = match &file.file_type {
                 FileType::Image(_) => tokio::fs::read(&file.path).await.map_err(|e| e.into()),
-                FileType::Zip(zip_file) => {
-                    match zip_file.entries.get(page_index) {
-                        Some(entry) => comic_loader.load_image_from_zip(&zip_file.path, entry).await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
-                        None => Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Page not found in zip")),
-                    }
-                }
+                FileType::Zip(zip_file) => match zip_file.entries.get(page_index) {
+                    Some(entry) => comic_loader
+                        .load_image_from_zip(&zip_file.path, entry)
+                        .await
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+                    None => Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "Page not found in zip",
+                    )),
+                },
                 _ => unreachable!(),
             };
 
             match image_data_result {
                 Ok(data) => {
-                    image_cache.lock().unwrap().insert_prefetched_data(key, data.clone());
+                    // Vec<u8> を Arc で包み、キャッシュ挿入とデコード/サムネイルで共有（フルコピー回避）。
+                    let data = Arc::new(data);
+                    // 非同期タスク内のため lock().await で取得。Arc の clone は参照カウント増加のみ。
+                    image_cache
+                        .lock()
+                        .await
+                        .insert_prefetched_data(key, data.clone());
                     if let Ok(img) = image::load_from_memory(&data) {
                         let color_image = egui::ColorImage::from_rgba_unmultiplied(
                             [img.width() as _, img.height() as _],
                             img.to_rgba8().as_flat_samples().as_slice(),
                         );
                         tx.send(UiUpdateMsg::ImageLoaded(color_image)).ok();
-                        
+
                         // サムネイル生成をこのタスク内からでも別タスクとしてキック
                         let should_generate = match &file.file_type {
                             FileType::Image(_) => true,
@@ -645,13 +801,18 @@ impl MyApp{
                         };
                         if should_generate {
                             let path = file.path.clone();
-                            let data_clone = data.clone();
+                            // Arc の clone（参照カウントのみ）で共有し、ワーカー側で Vec 化する。
+                            let data_for_thumb = data.clone();
                             tokio::spawn(async move {
-                                thumbnail::ThumbnailManager::ensure_thumbnail(path, data_clone);
+                                thumbnail::ThumbnailManager::ensure_thumbnail(
+                                    path,
+                                    data_for_thumb.as_slice().to_vec(),
+                                );
                             });
                         }
                     } else {
-                        tx.send(UiUpdateMsg::Error("Failed to decode image".to_string())).ok();
+                        tx.send(UiUpdateMsg::Error("Failed to decode image".to_string()))
+                            .ok();
                     }
                 }
                 Err(e) => {
@@ -662,52 +823,88 @@ impl MyApp{
     }
 
     /// バイトデータから画像をデコードしてUIに表示する
-    fn decode_and_display(&self, image_data: Vec<u8>) {
-        if let Ok(img) = image::load_from_memory(&image_data) {
+    ///
+    /// `&[u8]` を受け取り、データのフルコピーなしでデコードする。
+    fn decode_and_display(&self, image_data: &[u8]) {
+        if let Ok(img) = image::load_from_memory(image_data) {
             let color_image = egui::ColorImage::from_rgba_unmultiplied(
                 [img.width() as _, img.height() as _],
                 img.to_rgba8().as_flat_samples().as_slice(),
             );
-            self.update_tx.send(UiUpdateMsg::ImageLoaded(color_image)).ok();
+            self.update_tx
+                .send(UiUpdateMsg::ImageLoaded(color_image))
+                .ok();
         } else {
-            self.update_tx.send(UiUpdateMsg::Error("Failed to decode cached image".to_string())).ok();
+            self.update_tx
+                .send(UiUpdateMsg::Error(
+                    "Failed to decode cached image".to_string(),
+                ))
+                .ok();
         }
     }
-    
-    /// キャッシュウィンドウを更新し、必要なプリフェッチタスクを開始する
+
+    /// プリフェッチ対象キーを計算し、必要なプリフェッチタスクを開始する
     fn update_cache_and_prefetch(&mut self, center_key: &CacheKey) {
         let Some(all_keys) = (|| -> Option<Vec<CacheKey>> {
             let file = self.content_file.as_ref()?;
             match &file.file_type {
                 FileType::Image(_) => {
                     let dir = self.directory.as_ref()?;
-                    Some(dir.files.iter().map(|p| CacheKey::File(p.clone())).collect())
-                },
-                FileType::Zip(zip_file) => {
-                    Some((0..zip_file.entries.len()).map(|i| CacheKey::ZipEntry(file.path.clone(), i)).collect())
-                },
+                    Some(
+                        dir.files
+                            .iter()
+                            .map(|p| CacheKey::File(p.clone()))
+                            .collect(),
+                    )
+                }
+                FileType::Zip(zip_file) => Some(
+                    (0..zip_file.entries.len())
+                        .map(|i| CacheKey::ZipEntry(file.path.clone(), i))
+                        .collect(),
+                ),
                 _ => None,
             }
-        })() else { return; };
-        
-        let keys_to_prefetch = self.image_cache.lock().unwrap().update_window(center_key, &all_keys);
+        })() else {
+            return;
+        };
+
+        // UI スレッドから呼ばれるため try_lock を使用。
+        // ロック取得失敗時はそのフレームのプリフェッチをスキップする。
+        let keys_to_prefetch = match self.image_cache.try_lock() {
+            Ok(cache) => cache.compute_prefetch_keys(center_key, &all_keys),
+            Err(e) => {
+                debug!(
+                    "image_cache の try_lock に失敗したためプリフェッチキー計算をスキップします: {}",
+                    e
+                );
+                return;
+            }
+        };
 
         if !keys_to_prefetch.is_empty() {
             debug!("Prefetching {} keys.", keys_to_prefetch.len());
             for key in keys_to_prefetch {
+                // ※ comic_loader は ZIP プリフェッチ実装（フェーズ5）で使用するため保持。
+                #[allow(unused_variables)]
                 let comic_loader = self.comic_loader.clone();
                 let image_cache = self.image_cache.clone();
                 self.tokio_rt.spawn(async move {
                     let data_result = match &key {
-                        CacheKey::File(path) => tokio::fs::read(path).await.map_err(|e| e.to_string()),
-                        CacheKey::ZipEntry(path, index) => {
-                            // ZIPのプリフェッチは複雑なため、一旦実装を省略します。
-                            // ここを実装するには、非同期タスク内でComicFileを再ロードする必要がある
-                             return;
+                        CacheKey::File(path) => {
+                            tokio::fs::read(path).await.map_err(|e| e.to_string())
+                        }
+                        CacheKey::ZipEntry(_, _) => {
+                            // ZIP のプリフェッチは別フェーズ（フェーズ5）で実装するため、ここではスキップする。
+                            return;
                         }
                     };
                     if let Ok(data) = data_result {
-                        image_cache.lock().unwrap().insert_prefetched_data(key, data);
+                        // Vec<u8> を Arc で包んでキャッシュへ共有挿入（フルコピー回避）。
+                        // 非同期タスク内のため lock().await で取得。
+                        image_cache
+                            .lock()
+                            .await
+                            .insert_prefetched_data(key, Arc::new(data));
                     }
                 });
             }
@@ -806,7 +1003,7 @@ impl MyApp{
         }
         self.move_to_container(false);
     }
-    
+
     /// 次または前のコンテナ（ディレクトリ/ZIP）に移動します。
     ///
     /// この関数は、現在のディレクトリが属する親ディレクトリ内のファイルリストを検索し、
@@ -827,16 +1024,36 @@ impl MyApp{
     ///      - `next` が `true` の場合、`InitialPage::First` から開きます。
     ///      - `next` が `false` の場合、`InitialPage::Last` から開きます。
     fn move_to_container(&mut self, next: bool) {
-        debug!("Moving to {} container,{}", if next { "next" } else { "previous" },self.current_directory_path.as_ref().map(|p| format!(" current dir: {:?}", p)).unwrap_or_default());
-        let (parent_dir, current_dir_path) = match (self.parent_directory.as_ref(), self.current_directory_path.as_ref()) {
+        debug!(
+            "Moving to {} container,{}",
+            if next { "next" } else { "previous" },
+            self.current_directory_path
+                .as_ref()
+                .map(|p| format!(" current dir: {:?}", p))
+                .unwrap_or_default()
+        );
+        let (parent_dir, current_dir_path) = match (
+            self.parent_directory.as_ref(),
+            self.current_directory_path.as_ref(),
+        ) {
             (Some(pd), Some(cdp)) => (pd, cdp),
-            _ => { return; }
+            _ => {
+                return;
+            }
         };
 
         if let Some(current_idx) = parent_dir.files.iter().position(|p| p == current_dir_path) {
-            let target_idx = if next { current_idx + 1 } else { current_idx.saturating_sub(1) };
+            let target_idx = if next {
+                current_idx + 1
+            } else {
+                current_idx.saturating_sub(1)
+            };
             if let Some(target_path) = parent_dir.files.get(target_idx) {
-                let initial_page = if next { InitialPage::First } else { InitialPage::Last };
+                let initial_page = if next {
+                    InitialPage::First
+                } else {
+                    InitialPage::Last
+                };
                 self.load_and_open_path(target_path.clone(), initial_page);
             }
         }

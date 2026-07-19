@@ -1,13 +1,12 @@
-use std::{path::PathBuf, time::SystemTime};
-use std::collections::{HashMap, VecDeque, HashSet};
-use std::io::Read;
-use std::sync::{Arc, Mutex};
 use eframe::egui::{self, ColorImage, Context};
-use tokio::runtime::Runtime;
-use zip::ZipArchive;
 use natural_sort_rs::NaturalSort;
+use serde::{Deserialize, Serialize};
+use std::io::Read;
+use std::sync::Arc;
+use std::{path::PathBuf, time::SystemTime};
+use tokio::runtime::Runtime;
 use tracing::debug;
-use serde::{Serialize, Deserialize};
+use zip::ZipArchive;
 
 /// 画像ファイルの拡張子を定義します。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,9 +22,16 @@ pub enum ImageExtension {
 impl ImageExtension {
     /// 画像ファイル拡張子のスライスを返します。
     pub fn as_slice() -> &'static [ImageExtension] {
-        &[Self::Png, Self::Jpg, Self::Jpeg, Self::Webp, Self::Gif, Self::Avif]
+        &[
+            Self::Png,
+            Self::Jpg,
+            Self::Jpeg,
+            Self::Webp,
+            Self::Gif,
+            Self::Avif,
+        ]
     }
-    
+
     /// 拡張子の文字列表現を返します。
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -37,7 +43,7 @@ impl ImageExtension {
             Self::Avif => "avif",
         }
     }
-    
+
     /// 文字列から拡張子をパースします。
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -68,9 +74,18 @@ pub enum FileExtension {
 impl FileExtension {
     /// 全ファイル拡張子のスライスを返します。
     pub fn as_slice() -> &'static [FileExtension] {
-        &[Self::Png, Self::Jpg, Self::Jpeg, Self::Webp, Self::Gif, Self::Zip, Self::Pdf, Self::Avif]
+        &[
+            Self::Png,
+            Self::Jpg,
+            Self::Jpeg,
+            Self::Webp,
+            Self::Gif,
+            Self::Zip,
+            Self::Pdf,
+            Self::Avif,
+        ]
     }
-    
+
     /// 拡張子の文字列表現を返します。
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -84,7 +99,7 @@ impl FileExtension {
             Self::Avif => "avif",
         }
     }
-    
+
     /// 文字列から拡張子をパースします。
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -248,7 +263,9 @@ pub struct ComicLoader {
     /// 非同期タスクを実行するためのTokioランタイム。
     runtime: Arc<Runtime>,
     /// 画像データをキャッシュするためのミューテックス保護されたキャッシュ。
-    image_cache: Arc<Mutex<ImageCache>>,
+    // 非同期タスクから安全にロックするため tokio::sync::Mutex を使用する。
+    #[allow(dead_code)]
+    image_cache: Arc<tokio::sync::Mutex<ImageCache>>,
 }
 
 impl ComicLoader {
@@ -256,12 +273,15 @@ impl ComicLoader {
     ///
     /// # 引数
     /// - `runtime`: 非同期ランタイムの `Arc`。
-    /// - `image_cache`: 画像キャッシュの `Arc<Mutex>`。
+    /// - `image_cache`: 画像キャッシュの `Arc<tokio::sync::Mutex>`。
     ///
     /// # 戻り値
     /// `Self`: 新しい `ComicLoader` インスタンス。
-    pub fn new(runtime: Arc<Runtime>, image_cache: Arc<Mutex<ImageCache>>) -> Self {
-        Self { runtime, image_cache }
+    pub fn new(runtime: Arc<Runtime>, image_cache: Arc<tokio::sync::Mutex<ImageCache>>) -> Self {
+        Self {
+            runtime,
+            image_cache,
+        }
     }
 
     /// 指定されたパスの漫画ファイルを非同期で読み込み、デコードします。
@@ -288,39 +308,58 @@ impl ComicLoader {
     ///      `tokio::fs::read` で画像データを非同期で読み込み、`FileType::Image` を作成します。
     ///    - それ以外の場合: `FileType::Unknown` を設定します。
     /// 3. 取得した情報（パス、ファイルタイプ、更新日時、作成日時）を使用して `ComicFile` を構築し、`Ok` でラップして返します。
-    pub async fn load_comic_file(&self, path: PathBuf) -> Result<ComicFile, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    pub async fn load_comic_file(
+        &self,
+        path: PathBuf,
+    ) -> Result<ComicFile, Box<dyn std::error::Error + Send + Sync + 'static>> {
         let original_path = path.clone();
         let metadata = tokio::fs::metadata(&original_path).await?;
         let file_type = if metadata.is_dir() {
-            FileType::Directory(Directory { path: original_path.clone(), files: vec![] })
-        } else if original_path.extension().is_some_and(|ext| ext.to_string_lossy().to_lowercase() == "zip") {
+            FileType::Directory(Directory {
+                path: original_path.clone(),
+                files: vec![],
+            })
+        } else if original_path
+            .extension()
+            .is_some_and(|ext| ext.to_string_lossy().to_lowercase() == "zip")
+        {
             let path_clone = original_path.clone();
-            let entries_result = tokio::task::spawn_blocking(move || -> Result<Vec<String>, std::io::Error> {
-                let file = std::fs::File::open(path_clone)?;
-                let archive = ZipArchive::new(file)?;
-                let mut image_entries: Vec<String> = archive
-                    .file_names()
-                    .filter(|name| {
-                        !name.ends_with('/') && {
-                            if let Some(ext) = name.split('.').last() {
-                                ImageExtension::from_str(&ext).is_some()
-                            } else {
-                                false
+            let entries_result =
+                tokio::task::spawn_blocking(move || -> Result<Vec<String>, std::io::Error> {
+                    let file = std::fs::File::open(path_clone)?;
+                    let archive = ZipArchive::new(file)?;
+                    let mut image_entries: Vec<String> = archive
+                        .file_names()
+                        .filter(|name| {
+                            !name.ends_with('/') && {
+                                if let Some(ext) = name.split('.').last() {
+                                    ImageExtension::from_str(&ext).is_some()
+                                } else {
+                                    false
+                                }
                             }
-                        }
-                    })
-                    .map(|s| s.to_string())
-                    .collect();
-                
-                image_entries.natural_sort::<str>();
-                Ok(image_entries)
-            }).await;
+                        })
+                        .map(|s| s.to_string())
+                        .collect();
+
+                    image_entries.natural_sort::<str>();
+                    Ok(image_entries)
+                })
+                .await;
 
             let entries = entries_result??;
 
-            FileType::Zip(ZipFile { path: original_path.clone(), entries })
-        } else if original_path.extension().is_some_and(|ext| ext.to_string_lossy().to_lowercase() == "pdf") {
-            FileType::Pdf(PdfFile { path: original_path.clone() })
+            FileType::Zip(ZipFile {
+                path: original_path.clone(),
+                entries,
+            })
+        } else if original_path
+            .extension()
+            .is_some_and(|ext| ext.to_string_lossy().to_lowercase() == "pdf")
+        {
+            FileType::Pdf(PdfFile {
+                path: original_path.clone(),
+            })
         } else if original_path.extension().is_some_and(|ext| {
             let lower_ext = ext.to_string_lossy().to_lowercase();
             ImageExtension::from_str(&lower_ext).is_some()
@@ -414,7 +453,12 @@ impl ComicLoader {
     /// 6. `handles` が空の場合（つまり、ファイル名ソートが要求された場合）、
     ///    `natural_sort_by_key` を使用してファイル名を自然順でソートします。
     /// 7. ソートされた `paths` ベクトルを `Ok` でラップして返します。
-    pub async fn list_directory_paths(&self, dir_path: &PathBuf, sort_type: &SortType, sort_order: &SortOrder) -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn list_directory_paths(
+        &self,
+        dir_path: &PathBuf,
+        sort_type: &SortType,
+        sort_order: &SortOrder,
+    ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
         let mut paths = Vec::new();
         let mut entries = tokio::fs::read_dir(dir_path).await?;
 
@@ -422,9 +466,13 @@ impl ComicLoader {
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
             if path.is_dir() || FileExtension::from_str(&ext).is_some() {
-                 if *sort_type != SortType::FileName {
+                if *sort_type != SortType::FileName {
                     handles.push(tokio::spawn(async move {
                         tokio::fs::metadata(&path).await.ok().map(|m| (path, m))
                     }));
@@ -443,16 +491,29 @@ impl ComicLoader {
             }
             match sort_type {
                 SortType::ModifiedDate => {
-                    files_with_meta.sort_by(|a, b| a.1.modified().unwrap_or(SystemTime::UNIX_EPOCH).cmp(&b.1.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
-                },
+                    files_with_meta.sort_by(|a, b| {
+                        a.1.modified()
+                            .unwrap_or(SystemTime::UNIX_EPOCH)
+                            .cmp(&b.1.modified().unwrap_or(SystemTime::UNIX_EPOCH))
+                    });
+                }
                 SortType::CreationDate => {
-                    files_with_meta.sort_by(|a, b| a.1.created().unwrap_or(SystemTime::UNIX_EPOCH).cmp(&b.1.created().unwrap_or(SystemTime::UNIX_EPOCH)));
-                },
-                _ => {},
+                    files_with_meta.sort_by(|a, b| {
+                        a.1.created()
+                            .unwrap_or(SystemTime::UNIX_EPOCH)
+                            .cmp(&b.1.created().unwrap_or(SystemTime::UNIX_EPOCH))
+                    });
+                }
+                _ => {}
             }
             paths = files_with_meta.into_iter().map(|(p, _)| p).collect();
         } else {
-            paths.natural_sort_by_key::<str, _, _>(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string());
+            paths.natural_sort_by_key::<str, _, _>(|p| {
+                p.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
         }
 
         if *sort_order == SortOrder::Descending {
@@ -476,20 +537,22 @@ pub enum CacheKey {
 
 /// 画像キャッシュを管理する構造体です。
 ///
-/// このキャッシュは、メモリ使用量を制限しながら、最近アクセスされた画像データを保持し、
-/// プリフェッチ機能もサポートします。
+/// 真の LRU（Least Recently Used）キャッシュとして実装されており、
+/// メモリ使用量を制限しながら最近アクセスされた画像データを保持します。
+/// 画像データは `Arc<Vec<u8>>` で保持され、取得時は参照カウント増加のみで
+/// フルコピーを回避します。プリフェッチ（前後ページの事前読み込み）もサポートします。
 pub struct ImageCache {
-    /// `CacheKey` をキーとし、生の画像バイトデータを値とするハッシュマップ。
-    cache: HashMap<CacheKey, Vec<u8>>,
-    /// 現在キャッシュウィンドウ内にあるキーのセット。
-    window: HashSet<CacheKey>,
+    /// LRU 順序付きキャッシュ本体。
+    /// `lru::LruCache::unbounded()`（エントリ数上限なし）で生成し、
+    /// メモリ使用量ベースの evict は `insert` 側で自前制御する。
+    cache: lru::LruCache<CacheKey, Arc<Vec<u8>>>,
     /// 現在のメモリ使用量（バイト単位）。
     current_memory_usage: usize,
     /// キャッシュの最大メモリ使用量（バイト単位）。
     max_memory_usage: usize,
-    /// 現在のページから前方（次へ）にプリフェッチするウィンドウサイズ。
+    /// 現在のページから前方（次へ）にプリフェッチする範囲（ページ数）。
     window_size_next: usize,
-    /// 現在のページから後方（前へ）にプリフェッチするウィンドウサイズ。
+    /// 現在のページから後方（前へ）にプリフェッチする範囲（ページ数）。
     window_size_prev: usize,
 }
 
@@ -503,159 +566,270 @@ impl ImageCache {
     /// `Self`: 新しい `ImageCache` インスタンス。
     pub fn new(max_memory_usage: usize) -> Self {
         Self {
-            cache: HashMap::new(),
-            window: HashSet::new(),
+            cache: lru::LruCache::unbounded(),
             current_memory_usage: 0,
             max_memory_usage,
             window_size_next: 10,
             window_size_prev: 5,
         }
     }
-    
+
+    /// 現在のキャッシュメモリ使用量（バイト単位）を返します。
+    pub fn current_memory_usage(&self) -> usize {
+        self.current_memory_usage
+    }
+
     /// 指定されたキーに対応する画像データをキャッシュから取得します。
+    ///
+    /// `lru::LruCache::get` によりアクセス順序が更新され（MRU 化）、
+    /// 戻り値は `Arc<Vec<u8>>` のクローン（参照カウント増加のみで O(1)）となるため、
+    /// 画像データ全体のフルコピーは発生しません。
     ///
     /// # 引数
     /// - `key`: 取得するデータの `CacheKey` への参照。
     ///
     /// # 戻り値
-    /// `Option<Vec<u8>>`: 取得された画像データのバイトベクトル（クローン）、またはキーが存在しない場合は `None`。
-    pub fn get(&self, key: &CacheKey) -> Option<Vec<u8>> {
+    /// `Option<Arc<Vec<u8>>>`: 取得された画像データの `Arc`、またはキーが存在しない場合は `None`。
+    pub fn get(&mut self, key: &CacheKey) -> Option<Arc<Vec<u8>>> {
         self.cache.get(key).cloned()
     }
 
     /// 画像データをキャッシュに挿入します。
     ///
-    /// この関数は、指定されたキーと画像データをキャッシュに格納します。
-    /// キャッシュが既にキーを含んでいる場合や、メモリ制限を超過する場合は挿入されません。
+    /// メモリ使用量上限に達している場合は、**LRU 古い順（`pop_lru`）に自動的に evict** してから
+    /// 挿入します。これにより真の LRU 挙動（上限到達後も新規エントリが入り、古いものが追い出される）
+    /// を実現します。既存エントリがある場合は一度削除してサイズを再計算します。
     ///
     /// # 引数
     /// - `key`: 挿入するデータの `CacheKey`。
-    /// - `image_data`: 挿入する画像のバイトデータ。
+    /// - `data`: 挿入する画像のバイトデータ（`Arc` で共有）。
     ///
     /// # 動作
-    /// 1. キャッシュが既に `key` を含んでいる場合、何もしません。
-    /// 2. 挿入するデータのサイズを計算します。
-    /// 3. 現在のメモリ使用量と新しいデータのサイズが `max_memory_usage` を超える場合、
-    ///    デバッグログを出力し、挿入せずに終了します。
-    /// 4. `current_memory_usage` を更新し、`key` と `image_data` をキャッシュに挿入します。
-    /// 5. `key` をキャッシュウィンドウ (`self.window`) に追加します。
-    fn insert(&mut self, key: CacheKey, image_data: Vec<u8>) {
-        if self.cache.contains_key(&key) { return; }
-        let size_in_bytes = image_data.len();
-        if self.current_memory_usage + size_in_bytes > self.max_memory_usage {
-             debug!("Cache memory limit reached. Cannot insert {:?}", key);
-             return;
+    /// 1. 既存エントリがある場合は `pop` して `current_memory_usage` を減らす。
+    /// 2. `current_memory_usage + size` が `max_memory_usage` を超える間、`pop_lru` で古い順に evict。
+    /// 3. キャッシュが空でも単一エントリのサイズが上限を超える極端ケースはログして挿入をスキップ。
+    /// 4. `current_memory_usage` を加算し、`put` で挿入。
+    pub fn insert(&mut self, key: CacheKey, data: Arc<Vec<u8>>) {
+        let size = data.len();
+        // 既存エントリがある場合は一旦削除してサイズ調整（値の上書きを正しく処理）。
+        if let Some(old) = self.cache.pop(&key) {
+            self.current_memory_usage -= old.len();
         }
-        self.current_memory_usage += size_in_bytes;
-        self.cache.insert(key.clone(), image_data);
-        self.window.insert(key);
+        // メモリ上限を超える場合は LRU 古い順に evict して空きを作る。
+        while self.current_memory_usage + size > self.max_memory_usage {
+            match self.cache.pop_lru() {
+                Some((_, old_data)) => {
+                    self.current_memory_usage -= old_data.len();
+                    debug!(
+                        "Evicted LRU entry to make room (freed {} bytes).",
+                        old_data.len()
+                    );
+                }
+                None => {
+                    // キャッシュ空でも size > max の場合。1エントリも入らない極端ケースはログしてスキップ。
+                    debug!(
+                        "Cannot insert {:?}: size {} exceeds max {}",
+                        key, size, self.max_memory_usage
+                    );
+                    return;
+                }
+            }
+        }
+        self.current_memory_usage += size;
+        // put は pop 済みなので通常 None を返すが、念のため結果は破棄する。
+        let _ = self.cache.put(key, data);
     }
-    
-    /// 指定されたキーに対応するデータをキャッシュから削除します。
+
+    /// キャッシュの最大メモリ使用量を設定します。
+    ///
+    /// 上限を更新した後、現在のメモリ使用量が新しい上限を超えている場合は、
+    /// **LRU 古い順（`pop_lru`）に即時 evict** して上限内に収めます。
     ///
     /// # 引数
-    /// - `key`: 削除するデータの `CacheKey` への参照。
-    ///
-    /// # 動作
-    /// 1. キャッシュから `key` に対応するデータを削除します。
-    /// 2. データが削除された場合、`current_memory_usage` を削除されたデータのサイズ分減らします。
-    /// 3. `key` をキャッシュウィンドウ (`self.window`) から削除します。
-    /// 4. デバッグログを出力します。
-    fn evict(&mut self, key: &CacheKey) {
-        if let Some(removed_data) = self.cache.remove(key) {
-            self.current_memory_usage -= removed_data.len();
-            self.window.remove(key);
-            debug!("Evicted {:?} from cache.", key);
+    /// - `bytes`: 新しい最大メモリ使用量（バイト単位）。
+    pub fn set_max_memory_usage(&mut self, bytes: usize) {
+        self.max_memory_usage = bytes;
+        // 上限を下げた場合、超過分を LRU 古い順に即時 evict する。
+        while self.current_memory_usage > self.max_memory_usage {
+            match self.cache.pop_lru() {
+                Some((_, old_data)) => {
+                    self.current_memory_usage -= old_data.len();
+                    debug!(
+                        "Evicted LRU entry on max_memory_usage shrink (freed {} bytes).",
+                        old_data.len()
+                    );
+                }
+                None => break,
+            }
         }
     }
-    
-    /// キャッシュウィンドウを更新し、プリフェッチが必要なキーのリストを返します。
+
+    /// キャッシュの内容をすべてクリアします。
+    pub fn clear(&mut self) {
+        self.cache.clear();
+        self.current_memory_usage = 0;
+    }
+
+    /// 現在表示中のキーを中心に、プリフェッチ対象のキーリストを計算して返します。
     ///
-    /// この関数は、現在の表示キー (`center_key`) を中心に、
-    /// `window_size_prev` と `window_size_next` に基づいて新しいキャッシュウィンドウを計算します。
-    /// ウィンドウ外に出た既存のキャッシュエントリーは削除され、
-    /// 新しいウィンドウ内にあるがキャッシュに存在しないキーがプリフェッチ対象として返されます。
+    /// `window_size_prev` / `window_size_next` に基づき `center_key` 前後の範囲を計算し、
+    /// そのうち **まだキャッシュに存在しないキーのみ** を返します。
+    /// 存在判定には `peek`（LRU 順序を更新しない読み取り専用アクセス）を使用するため、
+    /// プリフェッチ判定自体が LRU 順序に影響を与えることはありません。
     ///
     /// # 引数
     /// - `center_key`: 現在表示されている画像の `CacheKey` への参照。
     /// - `all_keys`: すべての可能な `CacheKey` の順序付きリストへのスライス。
     ///
     /// # 戻り値
-    /// `Vec<CacheKey>`: プリフェッチが必要な `CacheKey` のリスト。
-    ///
-    /// # 動作
-    /// 1. `all_keys` 内で `center_key` のインデックスを検索します。見つからない場合は空のベクトルを返します。
-    /// 2. `center_idx`、`window_size_prev`、`window_size_next` に基づいて、
-    ///    新しいキャッシュウィンドウの開始インデックス (`start`) と終了インデックス (`end`) を計算します。
-    /// 3. `all_keys` のスライスから新しいウィンドウ内のキーを抽出し、`HashSet` (`new_window_keys`) に変換します。
-    /// 4. 現在のウィンドウ (`self.window`) と `new_window_keys` の差分を取り、
-    ///    ウィンドウ外に出たキー (`keys_to_evict`) を特定します。
-    /// 5. `keys_to_evict` 内の各キーに対して `evict` を呼び出し、キャッシュから削除します。
-    /// 6. `new_window_keys` 内のキーのうち、まだキャッシュに存在しないものだけをフィルタリングし、
-    ///    そのリストを返します。これがプリフェッチが必要なキーのリストになります。
-    pub fn update_window(&mut self, center_key: &CacheKey, all_keys: &[CacheKey]) -> Vec<CacheKey> {
+    /// `Vec<CacheKey>`: プリフェッチが必要な（未キャッシュの）`CacheKey` のリスト。
+    pub fn compute_prefetch_keys(
+        &self,
+        center_key: &CacheKey,
+        all_keys: &[CacheKey],
+    ) -> Vec<CacheKey> {
         let Some(center_idx) = all_keys.iter().position(|k| k == center_key) else {
             return vec![];
         };
 
         let start = center_idx.saturating_sub(self.window_size_prev);
         let end = (center_idx + self.window_size_next).min(all_keys.len().saturating_sub(1));
-        
-        if start > end { return vec![]; }
-        
-        let new_window_keys: HashSet<CacheKey> = all_keys[start..=end].iter().cloned().collect();
-        let keys_to_evict: Vec<CacheKey> = self.window.difference(&new_window_keys).cloned().collect();
-        for key in keys_to_evict {
-            self.evict(&key);
+
+        if start > end {
+            return vec![];
         }
 
-        new_window_keys.into_iter()
-            .filter(|k| !self.cache.contains_key(k))
+        // peek は LRU 順序を更新しないため、プリフェッチ判定に安全に使用できる。
+        all_keys[start..=end]
+            .iter()
+            .filter(|k| self.cache.peek(*k).is_none())
+            .cloned()
             .collect()
     }
-    
-    /// キャッシュの最大メモリ使用量を設定します。
-    ///
-    /// # 引数
-    /// - `bytes`: 新しい最大メモリ使用量（バイト単位）。
-    ///
-    /// # 動作
-    /// 1. `self.max_memory_usage` を指定された値に更新します。
-    /// 2. TODO: ここで、もし現在のメモリ使用量が新しい上限を超えている場合、
-    ///    キャッシュからデータを削除する処理を実装する必要があります。
-    pub fn set_max_memory_usage(&mut self, bytes: usize) {
-        self.max_memory_usage = bytes;
-        // TODO: ここでメモリが上限を超えていたら削除処理を走らせる
-    }
 
-    /// キャッシュの内容をすべてクリアします。
-    ///
-    /// # 動作
-    /// 1. `self.cache` をクリアします。
-    /// 2. `self.window` をクリアします。
-    /// 3. `self.current_memory_usage` を0にリセットします。
-    pub fn clear(&mut self) {
-        self.cache.clear();
-        self.window.clear();
-        self.current_memory_usage = 0;
-    }
-    
     /// プリフェッチされた画像データをキャッシュに挿入します。
     ///
-    /// この関数は、プリフェッチされたデータが現在のキャッシュウィンドウ内にあり、
-    /// かつまだキャッシュに存在しない場合にのみデータを挿入します。
+    /// プリフェッチ対象かどうかの判定は [`compute_prefetch_keys`](Self::compute_prefetch_keys) 側で
+    /// 済んでいる前提で、ここでは単に [`insert`](Self::insert) に委譲します。
+    /// LRU のメモリ上限管理（古い順 evict）は `insert` 内で行われます。
     ///
     /// # 引数
     /// - `key`: 挿入するデータの `CacheKey`。
-    /// - `data`: 挿入する画像のバイトデータ。
-    ///
-    /// # 動作
-    /// 1. `key` が現在のキャッシュウィンドウ (`self.window`) に含まれており、
-    ///    かつキャッシュ (`self.cache`) にまだ存在しないことを確認します。
-    /// 2. 条件が満たされた場合、`insert` メソッドを呼び出してデータをキャッシュに格納します。
-    pub fn insert_prefetched_data(&mut self, key: CacheKey, data: Vec<u8>) {
-        if self.window.contains(&key) && !self.cache.contains_key(&key) {
-            self.insert(key, data);
-        }
+    /// - `data`: 挿入する画像のバイトデータ（`Arc` で共有）。
+    pub fn insert_prefetched_data(&mut self, key: CacheKey, data: Arc<Vec<u8>>) {
+        self.insert(key, data);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// テスト用に連番の `CacheKey::File` を作成するヘルパ。
+    fn key(n: u32) -> CacheKey {
+        CacheKey::File(std::path::PathBuf::from(format!("/tmp/{}.png", n)))
+    }
+
+    /// 指定バイト数のダミーデータを `Arc<Vec<u8>>` で作成するヘルパ。
+    fn data(size: usize) -> Arc<Vec<u8>> {
+        Arc::new(vec![0u8; size])
+    }
+
+    #[test]
+    fn test_lru_eviction_on_insert() {
+        // 上限 100 バイト。各エントリ 30 バイト。
+        // 3 エントリ（計 90）までは入る。4 つ目で最古が evict される。
+        let mut cache = ImageCache::new(100);
+        cache.insert(key(1), data(30));
+        cache.insert(key(2), data(30));
+        cache.insert(key(3), data(30));
+        assert_eq!(cache.current_memory_usage(), 90);
+
+        // さらに挿入。最古の key(1) が evict され、全体は 90 バイトを維持するはず。
+        cache.insert(key(4), data(30));
+        assert_eq!(cache.current_memory_usage(), 90);
+        assert!(
+            cache.get(&key(1)).is_none(),
+            "key(1) は LRU 古い順に evict 済み"
+        );
+        assert!(cache.get(&key(2)).is_some());
+        assert!(cache.get(&key(3)).is_some());
+        assert!(cache.get(&key(4)).is_some());
+    }
+
+    #[test]
+    fn test_get_updates_lru_order() {
+        // 上限 90 バイト。3 エントリ × 30 バイトでぴったり。
+        let mut cache = ImageCache::new(90);
+        cache.insert(key(1), data(30));
+        cache.insert(key(2), data(30));
+        cache.insert(key(3), data(30));
+
+        // key(1) をアクセスして MRU 化する（LRU 順序が更新されることの検証）。
+        let _ = cache.get(&key(1));
+
+        // 新規挿入で evict が走る。最古は key(2) のはず（key(1) はアクセス済みで MRU 側）。
+        cache.insert(key(4), data(30));
+        assert!(
+            cache.get(&key(2)).is_none(),
+            "key(2) が LRU 古い順に evict されるはず"
+        );
+        assert!(
+            cache.get(&key(1)).is_some(),
+            "key(1) は get 済みのため残るはず"
+        );
+        assert!(cache.get(&key(4)).is_some());
+    }
+
+    #[test]
+    fn test_set_max_memory_usage_evicts() {
+        let mut cache = ImageCache::new(120);
+        cache.insert(key(1), data(30));
+        cache.insert(key(2), data(30));
+        cache.insert(key(3), data(30));
+        assert_eq!(cache.current_memory_usage(), 90);
+
+        // 上限を 50 に下げる。超過分（90 > 50）を LRU 古い順に即時 evict。
+        // 30 バイト×1つ evict -> 60（まだ > 50）。もう1つ evict -> 30（<= 50）。
+        cache.set_max_memory_usage(50);
+        assert!(
+            cache.current_memory_usage() <= 50,
+            "上限下げ後に即時 evict され、使用量は新しい上限以下になるはず"
+        );
+        // key(1), key(2) が evict され、最も新しい key(3) が残るはず。
+        assert!(cache.get(&key(1)).is_none());
+        assert!(cache.get(&key(2)).is_none());
+        assert!(cache.get(&key(3)).is_some());
+    }
+
+    #[test]
+    fn test_compute_prefetch_keys() {
+        // デフォルトの window_size_prev=5, window_size_next=10。
+        let mut cache = ImageCache::new(1000);
+        let all_keys: Vec<CacheKey> = (0..20).map(key).collect();
+        let center = key(10);
+
+        // ウィンドウ内のいくつかのキーを事前にキャッシュに投入（center 含む）。
+        cache.insert(key(8), data(10));
+        cache.insert(key(9), data(10));
+        cache.insert(key(10), data(10)); // center 自体
+
+        let prefetch = cache.compute_prefetch_keys(&center, &all_keys);
+
+        // ウィンドウ範囲: start = 10 - 5 = 5, end = min(10 + 10, 19) = 19（添字 5..=19）。
+        // 既存キャッシュ（key(8), key(9), key(10)）は除外される。
+        assert!(!prefetch.contains(&key(8)), "既存キーは除外される");
+        assert!(!prefetch.contains(&key(9)), "既存キーは除外される");
+        assert!(
+            !prefetch.contains(&key(10)),
+            "center 自体も既存なので除外される"
+        );
+
+        // 範囲外（例: key(2)）は含まれない。
+        assert!(!prefetch.contains(&key(2)), "ウィンドウ範囲外は含まれない");
+
+        // 範囲内で未キャッシュのキーは含まれる。
+        assert!(prefetch.contains(&key(5)), "範囲内・未キャッシュは含まれる");
+        assert!(prefetch.contains(&key(19)), "範囲の右端も含まれる");
     }
 }
