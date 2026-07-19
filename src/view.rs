@@ -60,22 +60,22 @@ impl ComicViewerUI {
     /// アプリケーションの上部パネル（メニューバー）を構築します。
     fn top_panel(&mut self, ctx: &Context, app_state: &mut ComicViewerAppState) -> Vec<UiCommand> {
         let mut commands = Vec::new();
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
+        eframe::egui::Panel::top::top("top_panel").show(ctx, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button(self.tr(app_state.language, "ファイル", "File"), |ui| {
                     if ui
                         .button(self.tr(app_state.language, "開く", "Open"))
                         .clicked()
                     {
                         commands.push(UiCommand::OpenFileDialog);
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .button(self.tr(app_state.language, "閉じる", "Close"))
                         .clicked()
                     {
                         commands.push(UiCommand::CloseFile);
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
                 ui.menu_button(self.tr(app_state.language, "設定", "Settings"), |ui| {
@@ -85,8 +85,8 @@ impl ComicViewerUI {
                             ui.menu_button(
                                 self.tr(app_state.language, "ファイル名", "File Name"),
                                 |ui| {
-                                    let is_asc = *app_state.sort_files == SortType::FileName
-                                        && *app_state.sort_order == SortOrder::Ascending;
+                                    let is_asc = app_state.sort_files == &SortType::FileName
+                                        && app_state.sort_order == &SortOrder::Ascending;
                                     if ui
                                         .radio(
                                             is_asc,
@@ -100,8 +100,8 @@ impl ComicViewerUI {
                                         ));
                                         ui.close();
                                     }
-                                    let is_desc = *app_state.sort_files == SortType::FileName
-                                        && *app_state.sort_order == SortOrder::Descending;
+                                    let is_desc = app_state.sort_files == &SortType::FileName
+                                        && app_state.sort_order == &SortOrder::Descending;
                                     if ui
                                         .radio(
                                             is_desc,
@@ -120,8 +120,8 @@ impl ComicViewerUI {
                             ui.menu_button(
                                 self.tr(app_state.language, "更新日時", "Modified Date"),
                                 |ui| {
-                                    let is_asc = *app_state.sort_files == SortType::ModifiedDate
-                                        && *app_state.sort_order == SortOrder::Ascending;
+                                    let is_asc = app_state.sort_files == &SortType::ModifiedDate
+                                        && app_state.sort_order == &SortOrder::Ascending;
                                     if ui
                                         .radio(
                                             is_asc,
@@ -135,8 +135,8 @@ impl ComicViewerUI {
                                         ));
                                         ui.close();
                                     }
-                                    let is_desc = *app_state.sort_files == SortType::ModifiedDate
-                                        && *app_state.sort_order == SortOrder::Descending;
+                                    let is_desc = app_state.sort_files == &SortType::ModifiedDate
+                                        && app_state.sort_order == &SortOrder::Descending;
                                     if ui
                                         .radio(
                                             is_desc,
@@ -155,8 +155,8 @@ impl ComicViewerUI {
                             ui.menu_button(
                                 self.tr(app_state.language, "作成日時", "Creation Date"),
                                 |ui| {
-                                    let is_asc = *app_state.sort_files == SortType::CreationDate
-                                        && *app_state.sort_order == SortOrder::Ascending;
+                                    let is_asc = app_state.sort_files == &SortType::CreationDate
+                                        && app_state.sort_order == &SortOrder::Ascending;
                                     if ui
                                         .radio(
                                             is_asc,
@@ -170,8 +170,8 @@ impl ComicViewerUI {
                                         ));
                                         ui.close();
                                     }
-                                    let is_desc = *app_state.sort_files == SortType::CreationDate
-                                        && *app_state.sort_order == SortOrder::Descending;
+                                    let is_desc = app_state.sort_files == &SortType::CreationDate
+                                        && app_state.sort_order == &SortOrder::Descending;
                                     if ui
                                         .radio(
                                             is_desc,
@@ -193,7 +193,7 @@ impl ComicViewerUI {
                     ui.menu_button(self.tr(app_state.language, "言語", "Language"), |ui| {
                         if ui
                             .radio(
-                                *app_state.language == crate::settings::Language::English,
+                                app_state.language == &crate::settings::Language::English,
                                 "English",
                             )
                             .clicked()
@@ -204,7 +204,7 @@ impl ComicViewerUI {
                         }
                         if ui
                             .radio(
-                                *app_state.language == crate::settings::Language::Japanese,
+                                app_state.language == &crate::settings::Language::Japanese,
                                 "日本語",
                             )
                             .clicked()
