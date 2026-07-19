@@ -1,11 +1,11 @@
-use std::path::{Path, PathBuf};
-use sha2::{Sha256, Digest};
 use directories::ProjectDirs;
-use tracing::{debug, error};
 use image::ImageFormat;
-use std::io::Read;
 use natural_sort_rs::NaturalSort;
+use sha2::{Digest, Sha256};
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
+use tracing::{debug, error};
 
 pub enum ThumbnailRequest {
     NewList(Vec<PathBuf>),
@@ -20,12 +20,12 @@ pub struct ThumbnailWorker {
 impl ThumbnailWorker {
     pub fn spawn(rt: &tokio::runtime::Runtime) -> Self {
         let (tx, mut rx) = mpsc::unbounded_channel::<ThumbnailRequest>();
-        
+
         rt.spawn(async move {
             let mut all_paths: Vec<PathBuf> = Vec::new();
             let mut focus_idx: usize = 0;
             let mut pending_indices: Vec<usize> = Vec::new();
-            
+
             loop {
                 let has_pending = !pending_indices.is_empty();
                 tokio::select! {
@@ -61,22 +61,22 @@ impl ThumbnailWorker {
             }
             debug!("Thumbnail worker stopped.");
         });
-        
+
         Self { tx }
     }
-    
+
     fn resort_pending(pending: &mut Vec<usize>, focus: usize) {
         pending.sort_by_key(|&i| (i as isize - focus as isize).abs());
     }
-    
+
     pub fn new_list(&self, paths: Vec<PathBuf>) {
         let _ = self.tx.send(ThumbnailRequest::NewList(paths));
     }
-    
+
     pub fn set_focus(&self, idx: usize) {
         let _ = self.tx.send(ThumbnailRequest::SetFocus(idx));
     }
-    
+
     pub fn stop(&self) {
         let _ = self.tx.send(ThumbnailRequest::Stop);
     }
@@ -93,13 +93,13 @@ impl ThumbnailManager {
     /// 指定されたファイルパスのサムネイル保存先パスを返します。
     pub fn get_thumbnail_path(file_path: &Path) -> Option<PathBuf> {
         let cache_dir = Self::get_cache_dir()?;
-        
+
         // ファイルの絶対パスからハッシュを生成してファイル名にします。
         let abs_path = std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
         let mut hasher = Sha256::new();
         hasher.update(abs_path.to_string_lossy().as_bytes());
         let hash = hex::encode(hasher.finalize());
-        
+
         Some(cache_dir.join(format!("{}.webp", hash)))
     }
 
@@ -116,9 +116,13 @@ impl ThumbnailManager {
         }
 
         debug!("Generating thumbnail from path for {:?}", file_path);
-        
-        let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-        
+
+        let ext = file_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
         let image_data = if ext == "zip" {
             Self::load_first_image_from_zip(&file_path)
         } else {
@@ -133,20 +137,25 @@ impl ThumbnailManager {
     fn load_first_image_from_zip(zip_path: &Path) -> Option<Vec<u8>> {
         let file = std::fs::File::open(zip_path).ok()?;
         let mut archive = zip::ZipArchive::new(file).ok()?;
-        
+
         let mut image_entries: Vec<String> = archive
             .file_names()
             .filter(|name| {
                 !name.ends_with('/') && {
                     let lower = name.to_lowercase();
-                    lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".webp") || lower.ends_with(".gif") || lower.ends_with(".avif")
+                    lower.ends_with(".png")
+                        || lower.ends_with(".jpg")
+                        || lower.ends_with(".jpeg")
+                        || lower.ends_with(".webp")
+                        || lower.ends_with(".gif")
+                        || lower.ends_with(".avif")
                 }
             })
             .map(|s| s.to_string())
             .collect();
-        
+
         image_entries.natural_sort::<str>();
-        
+
         if let Some(first_entry) = image_entries.first() {
             let mut zip_file = archive.by_name(first_entry).ok()?;
             let mut buffer = Vec::with_capacity(zip_file.size() as usize);
@@ -169,11 +178,11 @@ impl ThumbnailManager {
         }
 
         debug!("Generating thumbnail for {:?}", file_path);
-        
+
         // 重い処理なのでブロッキングを避けるため、呼び出し側で spawn されていることを想定
         if let Ok(img) = image::load_from_memory(&image_data) {
             let thumbnail = img.thumbnail(64, 64);
-            
+
             if let Some(parent) = thumb_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }

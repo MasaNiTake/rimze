@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
 use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use tracing::{debug, error};
 
 use crate::content::{SortOrder, SortType};
- 
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Language {
     English,
@@ -33,7 +33,8 @@ impl Default for AppSettings {
             sort_files: SortType::FileName,
             sort_order: SortOrder::Ascending,
             max_load_use_memory: 500 * 1024 * 1024, // 500MB
-            last_open_dir: directories::UserDirs::new().and_then(|ud| ud.picture_dir().map(|p| p.to_path_buf())),
+            last_open_dir: directories::UserDirs::new()
+                .and_then(|ud| ud.picture_dir().map(|p| p.to_path_buf())),
             font_name: None,
             language: Language::English,
         }
@@ -53,15 +54,13 @@ impl AppSettings {
         if let Some(path) = Self::get_config_path() {
             if path.exists() {
                 match std::fs::read_to_string(&path) {
-                    Ok(content) => {
-                        match serde_yaml::from_str(&content) {
-                            Ok(settings) => {
-                                debug!("Loaded settings from {:?}", path);
-                                return settings;
-                            }
-                            Err(e) => error!("Failed to deserialize settings: {}", e),
+                    Ok(content) => match serde_yaml::from_str(&content) {
+                        Ok(settings) => {
+                            debug!("Loaded settings from {:?}", path);
+                            return settings;
                         }
-                    }
+                        Err(e) => error!("Failed to deserialize settings: {}", e),
+                    },
                     Err(e) => error!("Failed to read settings file: {}", e),
                 }
             }
