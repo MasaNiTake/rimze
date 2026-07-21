@@ -60,7 +60,7 @@ impl ComicViewerUI {
     /// アプリケーションの上部パネル（メニューバー）を構築します。
     fn top_panel(&mut self, ctx: &Context, app_state: &mut ComicViewerAppState) -> Vec<UiCommand> {
         let mut commands = Vec::new();
-        eframe::egui::Panel::top::top("top_panel").show(ctx, |ui| {
+        eframe::egui::Panel::top("top_panel").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button(self.tr(app_state.language, "ファイル", "File"), |ui| {
                     if ui
@@ -216,11 +216,13 @@ impl ComicViewerUI {
                     });
 
                     let mut max_mem_mb = *app_state.max_load_use_memory / (1024 * 1024);
-                    let slider = egui::Slider::new(&mut max_mem_mb, 10..=1000).text(self.tr(
-                        app_state.language,
-                        "最大キャッシュ (MB)",
-                        "Max Cache (MB)",
-                    ));
+                    let slider =
+                        egui::Slider::new(&mut max_mem_mb, 10..=app_state.max_cache_mb_upper_limit)
+                            .text(self.tr(
+                                app_state.language,
+                                "最大キャッシュ (MB)",
+                                "Max Cache (MB)",
+                            ));
                     if ui.add(slider).changed() {
                         commands.push(UiCommand::SetMaxMemory(max_mem_mb * 1024 * 1024));
                     }
@@ -238,7 +240,7 @@ impl ComicViewerUI {
         thumb_height: f32,
     ) -> Vec<UiCommand> {
         let mut commands = Vec::new();
-        let screen_width = ctx.screen_rect().width();
+        let screen_width = ctx.content_rect().width();
         let side_min_width = screen_width * 0.02;
         let central_min_width = screen_width * 0.03;
         let side_max_width = screen_width - central_min_width;

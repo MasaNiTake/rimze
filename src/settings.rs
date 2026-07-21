@@ -25,6 +25,17 @@ pub struct AppSettings {
     pub last_open_dir: Option<PathBuf>,
     pub font_name: Option<String>,
     pub language: Language,
+    /// 設定 UI のキャッシュサイズスライダーの上限（MB）。
+    ///
+    /// 古い設定ファイル（このフィールドが存在しない）との後方互換性のため、
+    /// `#[serde(default = "...")]` で欠損時にデフォルト値を補完する。
+    #[serde(default = "default_max_cache_mb_upper_limit")]
+    pub max_cache_mb_upper_limit: usize,
+}
+
+/// [`AppSettings::max_cache_mb_upper_limit`] の serde デフォルト値（4096MB）。
+fn default_max_cache_mb_upper_limit() -> usize {
+    4096
 }
 
 impl Default for AppSettings {
@@ -37,6 +48,7 @@ impl Default for AppSettings {
                 .and_then(|ud| ud.picture_dir().map(|p| p.to_path_buf())),
             font_name: None,
             language: Language::English,
+            max_cache_mb_upper_limit: 4096, // 4096MB
         }
     }
 }

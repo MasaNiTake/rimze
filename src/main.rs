@@ -84,6 +84,8 @@ pub struct ComicViewerAppState<'a> {
     pub is_pointer_over_central_panel: &'a mut bool,
     pub file_filter: &'a mut String,
     pub language: &'a mut settings::Language,
+    /// 設定 UI のキャッシュサイズスライダーの上限（MB）。
+    pub max_cache_mb_upper_limit: usize,
 }
 
 /// UIの更新メッセージを定義します。
@@ -114,9 +116,9 @@ const UI_UPDATE_CHANNEL_CAPACITY: usize = 256;
 
 impl eframe::App for MyApp {
     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // eframe 0.34+ requires the `ui` method to be implemented.
-        // However, we completely override the `update` method, which is the main entry point called by the eframe runner,
-        // so this dummy `ui` method is never actually executed.
+        // eframe 0.34+ では `ui` メソッドの実装が必須です。
+        // ただし、eframe ランナーが呼ぶメインエントリポイントである `update` メソッドを
+        // 完全に上書きしているため、このダミー `ui` メソッドは実際には実行されません。
     }
 
     /// アプリケーションのUIを更新します。
@@ -132,6 +134,7 @@ impl eframe::App for MyApp {
             is_pointer_over_central_panel: &mut self.is_pointer_over_central_panel,
             file_filter: &mut self.file_filter,
             language: &mut self.app_settings.language,
+            max_cache_mb_upper_limit: self.app_settings.max_cache_mb_upper_limit,
         };
 
         let commands = self.ui_state.build_ui(ctx, frame, &mut app_state);
@@ -231,6 +234,12 @@ impl eframe::App for MyApp {
     }
 }
 
+impl Drop for MyApp {
+    fn drop(&mut self) {
+        self.thumbnail_worker.stop();
+    }
+}
+
 /// バックグラウンドタスクを起動し、panic 時にログ出力する監視付き spawn。
 ///
 /// `tokio_rt.spawn(task)` の戻り値の [`tokio::task::JoinHandle`] を監視し、
@@ -300,8 +309,7 @@ impl MyApp {
 
                     // `egui::FontDefinitions::default()` は Proportional/Monospace の両キーを
                     // 必ず保持するが、安全のため `if let Some` で存在確認してから挿入する。
-                    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional)
-                    {
+                    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
                         family.insert(0, "ja_font".to_owned());
                     }
                     if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
@@ -375,8 +383,10 @@ impl MyApp {
                     .unwrap_or_else(|| PathBuf::from("/"));
                 // 非同期タスク内で UI スレッドをブロックせずダイアログを表示する。
                 // 選択結果は UiUpdateMsg::FilePicked メッセージで UI スレッドに通知する。
-                let extensions: Vec<&'static str> =
-                    FileExtension::as_slice().iter().map(|ext| ext.as_str()).collect();
+                let extensions: Vec<&'static str> = FileExtension::as_slice()
+                    .iter()
+                    .map(|ext| ext.as_str())
+                    .collect();
                 spawn_tracked(&self.tokio_rt, async move {
                     let file_handle = rfd::AsyncFileDialog::new()
                         .add_filter("Image Files", &extensions)
@@ -628,8 +638,7 @@ impl MyApp {
                 // ファイルです。
                 match comic_loader.load_comic_file(path).await {
                     Ok(comic_file) => {
-                        let _ =
-                            tx.try_send(UiUpdateMsg::ComicFileLoaded(comic_file, initial_page));
+                        let _ = tx.try_send(UiUpdateMsg::ComicFileLoaded(comic_file, initial_page));
                     }
                     Err(e) => {
                         let _ = tx.try_send(UiUpdateMsg::Error(e.to_string()));
@@ -855,8 +864,8 @@ impl MyApp {
                             });
                         }
                     } else {
-                        let _ = tx
-                            .try_send(UiUpdateMsg::Error("Failed to decode image".to_string()));
+                        let _ =
+                            tx.try_send(UiUpdateMsg::Error("Failed to decode image".to_string()));
                     }
                 }
                 Err(e) => {
@@ -872,7 +881,9 @@ impl MyApp {
     fn decode_and_display(&self, image_data: &[u8]) {
         // UI スレッドから呼ばれるため try_send を使用（.await 不可）。
         if let Some(color_image) = content::decode_bytes_to_color_image(image_data) {
-            let _ = self.update_tx.try_send(UiUpdateMsg::ImageLoaded(color_image));
+            let _ = self
+                .update_tx
+                .try_send(UiUpdateMsg::ImageLoaded(color_image));
         } else {
             let _ = self.update_tx.try_send(UiUpdateMsg::Error(
                 "Failed to decode cached image".to_string(),
@@ -924,10 +935,8 @@ impl MyApp {
             // エントリ名リストを取得する。spawn する非同期クロージャは 'static であり
             // self にアクセスできないため、ループ内で事前に entry_name を解決してから
             // クロージャへ move する（SingleFile 側は key 内にパスを直接持つため不要）。
-            let zip_entries: Option<&Vec<String>> = self
-                .content_file
-                .as_ref()
-                .and_then(|f| match &f.file_type {
+            let zip_entries: Option<&Vec<String>> =
+                self.content_file.as_ref().and_then(|f| match &f.file_type {
                     FileType::Zip(zip_file) => Some(&zip_file.entries),
                     _ => None,
                 });

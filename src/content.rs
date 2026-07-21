@@ -226,12 +226,20 @@ pub enum SortType {
 }
 
 /// ファイルのソート順（昇順・降順）を定義します。
+///
+/// 実際のソート（[`ComicLoader::list_directory_paths`]）では、
+/// [`SortOrder::Ascending`] で比較結果をそのまま採用し、
+/// [`SortOrder::Descending`] のときだけ結果を反転（`reverse`）します。
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SortOrder {
-    /// 昇順（デフォルト）。新しいもの、または文字コード順。
+    /// 昇順（デフォルト）。比較結果をそのまま採用する。
+    /// ソート基準（[`SortType`]）がファイル名なら文字コード順（小さいものが先）、
+    /// タイムスタンプ（更新日・作成日）なら古いものが先となる。
     #[default]
     Ascending,
-    /// 降順。古いもの、または逆順。
+    /// 降順。比較結果を反転する。
+    /// ソート基準がファイル名なら文字コード順の逆（大きいものが先）、
+    /// タイムスタンプなら新しいものが先となる。
     Descending,
 }
 
