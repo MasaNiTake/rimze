@@ -902,9 +902,28 @@ impl MyApp {
 
         if !keys_to_prefetch.is_empty() {
             debug!("Prefetching {} keys.", keys_to_prefetch.len());
+            // CacheKey::ZipEntry の index → entry_name 解決用に、現在開いている ZIP の
+            // エントリ名リストを取得する。spawn する非同期クロージャは 'static であり
+            // self にアクセスできないため、ループ内で事前に entry_name を解決してから
+            // クロージャへ move する（SingleFile 側は key 内にパスを直接持つため不要）。
+            let zip_entries: Option<&Vec<String>> = self
+                .content_file
+                .as_ref()
+                .and_then(|f| match &f.file_type {
+                    FileType::Zip(zip_file) => Some(&zip_file.entries),
+                    _ => None,
+                });
+
             for key in keys_to_prefetch {
-                // ※ comic_loader は ZIP プリフェッチ実装（フェーズ5）で使用するため保持。
-                #[allow(unused_variables)]
+                // CacheKey::ZipEntry の index から該当エントリ名を事前解決する。
+                // index が範囲外（None）の場合はクロージャ内でスキップする。
+                let zip_entry_name = match &key {
+                    CacheKey::ZipEntry(_, index) => {
+                        zip_entries.and_then(|entries| entries.get(*index).cloned())
+                    }
+                    _ => None,
+                };
+
                 let comic_loader = self.comic_loader.clone();
                 let image_cache = self.image_cache.clone();
                 spawn_tracked(&self.tokio_rt, async move {
@@ -912,9 +931,16 @@ impl MyApp {
                         CacheKey::File(path) => {
                             tokio::fs::read(path).await.map_err(|e| e.to_string())
                         }
-                        CacheKey::ZipEntry(_, _) => {
-                            // ZIP のプリフェッチは別フェーズ（フェーズ5）で実装するため、ここではスキップする。
-                            return;
+                        CacheKey::ZipEntry(zip_path, _) => {
+                            // index が範囲外などでエントリ名が解決できない場合はスキップする。
+                            let Some(entry_name) = zip_entry_name.as_ref() else {
+                                return;
+                            };
+                            debug!("Prefetching ZIP entry: {:?}[{}]", zip_path, entry_name);
+                            comic_loader
+                                .load_image_from_zip(zip_path, entry_name)
+                                .await
+                                .map_err(|e| e.to_string())
                         }
                     };
                     if let Ok(data) = data_result {
