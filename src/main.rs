@@ -1,7 +1,7 @@
 use eframe::egui;
-use std::sync::mpsc::{Receiver, Sender};
 use std::{path::PathBuf, sync::Arc};
 use tokio::runtime;
+use tokio::sync::mpsc;
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
@@ -61,8 +61,8 @@ struct MyApp {
     current_page_index: usize,
     current_directory_path: Option<PathBuf>,
     ui_state: view::ComicViewerUI,
-    update_tx: std::sync::mpsc::Sender<UiUpdateMsg>,
-    update_rx: std::sync::mpsc::Receiver<UiUpdateMsg>,
+    update_tx: mpsc::Sender<UiUpdateMsg>,
+    update_rx: mpsc::Receiver<UiUpdateMsg>,
     last_error: Option<String>,
     is_pointer_over_central_panel: bool,
     thumbnail_worker: Arc<thumbnail::ThumbnailWorker>,
@@ -103,6 +103,12 @@ pub enum InitialPage {
     First,
     Last,
 }
+
+/// UI 更新チャネルのバッファ容量。
+///
+/// UI↔非同期タスク間通信用の `tokio::sync::mpsc` チャネルの容量。
+/// UI スレッドは毎フレーム `try_recv` で受信するため、十分な余裕を持たせる。
+const UI_UPDATE_CHANNEL_CAPACITY: usize = 256;
 
 impl eframe::App for MyApp {
     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -214,6 +220,22 @@ impl eframe::App for MyApp {
     }
 }
 
+/// バックグラウンドタスクを起動し、panic 時にログ出力する監視付き spawn。
+///
+/// `tokio_rt.spawn(task)` の戻り値の [`tokio::task::JoinHandle`] を監視し、
+/// タスクが panic して join エラーになった場合に `tracing::error!` で記録します。
+fn spawn_tracked<F>(tokio_rt: &tokio::runtime::Runtime, task: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let handle = tokio_rt.spawn(task);
+    tokio_rt.spawn(async move {
+        if let Err(join_err) = handle.await {
+            tracing::error!("バックグラウンドタスクがパニックしました: {join_err}");
+        }
+    });
+}
+
 impl MyApp {
     fn update_and_save_settings(&mut self) {
         self.app_settings.sort_files = self.sort_files.clone();
@@ -226,7 +248,7 @@ impl MyApp {
 
 impl MyApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let (update_tx, update_rx) = std::sync::mpsc::channel();
+        let (update_tx, update_rx) = mpsc::channel(UI_UPDATE_CHANNEL_CAPACITY);
 
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
@@ -442,7 +464,7 @@ impl MyApp {
                         let sort_type = self.sort_files.clone();
                         let sort_order = self.sort_order.clone();
                         let path_clone = path.clone();
-                        self.tokio_rt.spawn(async move {
+                        spawn_tracked(&self.tokio_rt, async move {
                             match comic_loader
                                 .list_directory_paths(&path_clone, &sort_type, &sort_order)
                                 .await
@@ -453,10 +475,10 @@ impl MyApp {
                                         files: paths,
                                     };
                                     // このアクションに対応する特定のメッセージを送信します。
-                                    tx.send(UiUpdateMsg::DirectoryChangedFromDrop(dir)).ok();
+                                    let _ = tx.try_send(UiUpdateMsg::DirectoryChangedFromDrop(dir));
                                 }
                                 Err(e) => {
-                                    tx.send(UiUpdateMsg::Error(e.to_string())).ok();
+                                    let _ = tx.try_send(UiUpdateMsg::Error(e.to_string()));
                                 }
                             }
                         });
@@ -531,17 +553,16 @@ impl MyApp {
         let sort_type = self.sort_files.clone();
         let sort_order = self.sort_order.clone();
 
-        self.tokio_rt.spawn(async move {
+        spawn_tracked(&self.tokio_rt, async move {
             let metadata_result = tokio::fs::metadata(&path).await;
 
             let is_dir = if let Ok(metadata) = metadata_result {
                 metadata.is_dir()
             } else {
-                tx.send(UiUpdateMsg::Error(format!(
+                let _ = tx.try_send(UiUpdateMsg::Error(format!(
                     "Failed to get metadata for {:?}",
                     path
-                )))
-                .ok();
+                )));
                 return;
             };
 
@@ -571,32 +592,34 @@ impl MyApp {
                             // 画像ファイルが見つかりました。読み込みます。
                             match comic_loader.load_comic_file(p.clone()).await {
                                 Ok(comic_file) => {
-                                    tx.send(UiUpdateMsg::ComicFileLoaded(comic_file, initial_page))
-                                        .ok();
+                                    let _ = tx.try_send(UiUpdateMsg::ComicFileLoaded(
+                                        comic_file,
+                                        initial_page,
+                                    ));
                                 }
                                 Err(e) => {
-                                    tx.send(UiUpdateMsg::Error(e.to_string())).ok();
+                                    let _ = tx.try_send(UiUpdateMsg::Error(e.to_string()));
                                 }
                             }
                         } else {
                             // ディレクトリ内に画像ファイルがありません。ディレクトリ自体を読み込みます。
                             let dir = content::Directory { path, files: paths };
-                            tx.send(UiUpdateMsg::DirectoryLoaded(dir)).ok();
+                            let _ = tx.try_send(UiUpdateMsg::DirectoryLoaded(dir));
                         }
                     }
                     Err(e) => {
-                        tx.send(UiUpdateMsg::Error(e.to_string())).ok();
+                        let _ = tx.try_send(UiUpdateMsg::Error(e.to_string()));
                     }
                 }
             } else {
                 // ファイルです。
                 match comic_loader.load_comic_file(path).await {
                     Ok(comic_file) => {
-                        tx.send(UiUpdateMsg::ComicFileLoaded(comic_file, initial_page))
-                            .ok();
+                        let _ =
+                            tx.try_send(UiUpdateMsg::ComicFileLoaded(comic_file, initial_page));
                     }
                     Err(e) => {
-                        tx.send(UiUpdateMsg::Error(e.to_string())).ok();
+                        let _ = tx.try_send(UiUpdateMsg::Error(e.to_string()));
                     }
                 }
             }
@@ -665,7 +688,7 @@ impl MyApp {
         let thumbnail_worker = self.thumbnail_worker.clone();
         let path_clone_outer = path.clone();
 
-        self.tokio_rt.spawn(async move {
+        spawn_tracked(&self.tokio_rt, async move {
             match comic_loader
                 .list_directory_paths(&path_clone_outer, &sort_type, &sort_order)
                 .await
@@ -687,10 +710,10 @@ impl MyApp {
                     } else {
                         UiUpdateMsg::DirectoryLoaded(dir)
                     };
-                    tx.send(msg).ok();
+                    let _ = tx.try_send(msg);
                 }
                 Err(e) => {
-                    tx.send(UiUpdateMsg::Error(e.to_string())).ok();
+                    let _ = tx.try_send(UiUpdateMsg::Error(e.to_string()));
                 }
             }
         });
@@ -747,7 +770,7 @@ impl MyApp {
 
         if should_generate {
             let path = file.path.clone();
-            self.tokio_rt.spawn(async move {
+            spawn_tracked(&self.tokio_rt, async move {
                 // ensure_thumbnail が Vec<u8> を取る現仕様のため、ワーカースレッド側で Vec 化する
                 // （UI スレッドではないため、ここでのフルコピーは許容される）。
                 thumbnail::ThumbnailManager::ensure_thumbnail(path, image_data.as_slice().to_vec());
@@ -761,7 +784,7 @@ impl MyApp {
         let tx = self.update_tx.clone();
         let image_cache = self.image_cache.clone();
 
-        self.tokio_rt.spawn(async move {
+        spawn_tracked(&self.tokio_rt, async move {
             let image_data_result = match &file.file_type {
                 FileType::Image(_) => tokio::fs::read(&file.path).await.map_err(|e| e.into()),
                 FileType::Zip(zip_file) => match zip_file.entries.get(page_index) {
@@ -787,7 +810,7 @@ impl MyApp {
                         .await
                         .insert_prefetched_data(key, data.clone());
                     if let Some(color_image) = content::decode_bytes_to_color_image(&data) {
-                        tx.send(UiUpdateMsg::ImageLoaded(color_image)).ok();
+                        let _ = tx.try_send(UiUpdateMsg::ImageLoaded(color_image));
 
                         // サムネイル生成をこのタスク内からでも別タスクとしてキック
                         let should_generate = match &file.file_type {
@@ -799,20 +822,27 @@ impl MyApp {
                             let path = file.path.clone();
                             // Arc の clone（参照カウントのみ）で共有し、ワーカー側で Vec 化する。
                             let data_for_thumb = data.clone();
-                            tokio::spawn(async move {
+                            let handle = tokio::spawn(async move {
                                 thumbnail::ThumbnailManager::ensure_thumbnail(
                                     path,
                                     data_for_thumb.as_slice().to_vec(),
                                 );
                             });
+                            tokio::spawn(async move {
+                                if let Err(join_err) = handle.await {
+                                    tracing::error!(
+                                        "サムネイル生成タスクがパニックしました: {join_err}"
+                                    );
+                                }
+                            });
                         }
                     } else {
-                        tx.send(UiUpdateMsg::Error("Failed to decode image".to_string()))
-                            .ok();
+                        let _ = tx
+                            .try_send(UiUpdateMsg::Error("Failed to decode image".to_string()));
                     }
                 }
                 Err(e) => {
-                    tx.send(UiUpdateMsg::Error(e.to_string())).ok();
+                    let _ = tx.try_send(UiUpdateMsg::Error(e.to_string()));
                 }
             }
         });
@@ -822,16 +852,13 @@ impl MyApp {
     ///
     /// `&[u8]` を受け取り、データのフルコピーなしでデコードする。
     fn decode_and_display(&self, image_data: &[u8]) {
+        // UI スレッドから呼ばれるため try_send を使用（.await 不可）。
         if let Some(color_image) = content::decode_bytes_to_color_image(image_data) {
-            self.update_tx
-                .send(UiUpdateMsg::ImageLoaded(color_image))
-                .ok();
+            let _ = self.update_tx.try_send(UiUpdateMsg::ImageLoaded(color_image));
         } else {
-            self.update_tx
-                .send(UiUpdateMsg::Error(
-                    "Failed to decode cached image".to_string(),
-                ))
-                .ok();
+            let _ = self.update_tx.try_send(UiUpdateMsg::Error(
+                "Failed to decode cached image".to_string(),
+            ));
         }
     }
 
@@ -880,7 +907,7 @@ impl MyApp {
                 #[allow(unused_variables)]
                 let comic_loader = self.comic_loader.clone();
                 let image_cache = self.image_cache.clone();
-                self.tokio_rt.spawn(async move {
+                spawn_tracked(&self.tokio_rt, async move {
                     let data_result = match &key {
                         CacheKey::File(path) => {
                             tokio::fs::read(path).await.map_err(|e| e.to_string())

@@ -5,7 +5,7 @@ use std::io::Read;
 use std::sync::Arc;
 use std::{path::PathBuf, time::SystemTime};
 use tokio::runtime::Runtime;
-use tracing::debug;
+use tracing::{debug, warn};
 use zip::ZipArchive;
 
 /// 画像ファイルの拡張子を定義します。
@@ -490,8 +490,14 @@ impl ComicLoader {
         if !handles.is_empty() {
             let mut files_with_meta = Vec::new();
             for handle in handles {
-                if let Ok(Some((path, meta))) = handle.await {
-                    files_with_meta.push((path, meta));
+                match handle.await {
+                    Ok(Some((path, meta))) => files_with_meta.push((path, meta)),
+                    // メタデータ取得に失敗した場合は対象パスをスキップする。
+                    Ok(None) => {}
+                    // 取得タスクが panic した場合は警告ログのみ記録し、処理は継続する。
+                    Err(join_err) => {
+                        warn!("メタデータ取得タスクがパニックしました: {join_err}");
+                    }
                 }
             }
             match sort_type {
