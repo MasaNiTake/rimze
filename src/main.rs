@@ -94,6 +94,8 @@ pub enum UiUpdateMsg {
     ImageLoaded(egui::ColorImage),
     DirectoryChanged(content::Directory),
     DirectoryChangedFromDrop(content::Directory),
+    /// ファイルダイアログで選択されたファイルを開く。
+    FilePicked(PathBuf),
     Error(String),
 }
 
@@ -185,6 +187,15 @@ impl eframe::App for MyApp {
                             debug!("No image or zip files found in directory");
                         }
                     }
+                }
+                UiUpdateMsg::FilePicked(path) => {
+                    debug!("File picked: {:?}", path);
+                    // 選択されたファイルの親ディレクトリを次回の初期表示先として記憶
+                    self.ui_state.last_open_dir = path.parent().map(|p| p.to_path_buf());
+                    // last_open_dir の更新を設定ファイルへ永続化
+                    self.update_and_save_settings();
+                    // ファイルを開く（同期 OpenFileDialog 時の処理順序を再現）
+                    self.open_new_file(path);
                 }
                 UiUpdateMsg::Error(err_msg) => {
                     eprintln!("Error: {}", err_msg);
@@ -354,27 +365,28 @@ impl MyApp {
     fn handle_ui_command(&mut self, command: UiCommand) {
         match command {
             UiCommand::OpenFileDialog => {
-                let file = rfd::FileDialog::new()
-                    .add_filter(
-                        "Image Files",
-                        &FileExtension::as_slice()
-                            .iter()
-                            .map(|ext| ext.as_str())
-                            .collect::<Vec<_>>(),
-                    )
-                    .set_directory(
-                        self.ui_state
-                            .last_open_dir
-                            .as_deref()
-                            .unwrap_or(&PathBuf::from("/")),
-                    )
-                    .pick_file();
-
-                if let Some(path) = file {
-                    self.ui_state.last_open_dir = path.parent().map(|p| p.to_path_buf());
-                    self.update_and_save_settings();
-                    self.open_new_file(path);
-                }
+                // ダイアログ構築に必要な情報を事前に取得（spawn クロージャは self にアクセス不可）
+                let tx = self.update_tx.clone();
+                let initial_dir = self
+                    .ui_state
+                    .last_open_dir
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("/"));
+                // 非同期タスク内で UI スレッドをブロックせずダイアログを表示する。
+                // 選択結果は UiUpdateMsg::FilePicked メッセージで UI スレッドに通知する。
+                let extensions: Vec<&'static str> =
+                    FileExtension::as_slice().iter().map(|ext| ext.as_str()).collect();
+                spawn_tracked(&self.tokio_rt, async move {
+                    let file_handle = rfd::AsyncFileDialog::new()
+                        .add_filter("Image Files", &extensions)
+                        .set_directory(&initial_dir)
+                        .pick_file()
+                        .await;
+                    if let Some(handle) = file_handle {
+                        let path: PathBuf = handle.path().to_path_buf();
+                        let _ = tx.try_send(UiUpdateMsg::FilePicked(path));
+                    }
+                });
             }
             UiCommand::OpenFile(path) => {
                 self.load_and_open_path(path, InitialPage::First);
