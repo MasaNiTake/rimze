@@ -1,10 +1,9 @@
-use eframe::egui::{self, ColorImage, Context};
+use eframe::egui::{self, ColorImage};
 use natural_sort_rs::NaturalSort;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::sync::Arc;
 use std::{path::PathBuf, time::SystemTime};
-use tokio::runtime::Runtime;
 use tracing::{debug, warn};
 use zip::ZipArchive;
 
@@ -20,30 +19,6 @@ pub enum ImageExtension {
 }
 
 impl ImageExtension {
-    /// 画像ファイル拡張子のスライスを返します。
-    pub fn as_slice() -> &'static [ImageExtension] {
-        &[
-            Self::Png,
-            Self::Jpg,
-            Self::Jpeg,
-            Self::Webp,
-            Self::Gif,
-            Self::Avif,
-        ]
-    }
-
-    /// 拡張子の文字列表現を返します。
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Png => "png",
-            Self::Jpg => "jpg",
-            Self::Jpeg => "jpeg",
-            Self::Webp => "webp",
-            Self::Gif => "gif",
-            Self::Avif => "avif",
-        }
-    }
-
     /// 文字列から拡張子をパースします。
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -270,31 +245,18 @@ impl ComicFile {
 
 /// 漫画ファイルを非同期で読み込み、デコードする役割を担う構造体です。
 ///
-/// Tokioランタイムと画像キャッシュへの参照を保持し、
 /// ファイルシステムやZIPアーカイブからのデータロードを処理します。
-pub struct ComicLoader {
-    /// 非同期タスクを実行するためのTokioランタイム。
-    runtime: Arc<Runtime>,
-    /// 画像データをキャッシュするためのミューテックス保護されたキャッシュ。
-    // 非同期タスクから安全にロックするため tokio::sync::Mutex を使用する。
-    #[allow(dead_code)]
-    image_cache: Arc<tokio::sync::Mutex<ImageCache>>,
-}
+/// 画像キャッシュの管理は呼び出し元（`MyApp`）側で行うため、
+/// この構造体はキャッシュを保持しません。
+pub struct ComicLoader {}
 
 impl ComicLoader {
     /// 新しい `ComicLoader` インスタンスを作成します。
     ///
-    /// # 引数
-    /// - `runtime`: 非同期ランタイムの `Arc`。
-    /// - `image_cache`: 画像キャッシュの `Arc<tokio::sync::Mutex>`。
-    ///
     /// # 戻り値
     /// `Self`: 新しい `ComicLoader` インスタンス。
-    pub fn new(runtime: Arc<Runtime>, image_cache: Arc<tokio::sync::Mutex<ImageCache>>) -> Self {
-        Self {
-            runtime,
-            image_cache,
-        }
+    pub fn new() -> Self {
+        Self {}
     }
 
     /// 指定されたパスの漫画ファイルを非同期で読み込み、デコードします。

@@ -10,9 +10,7 @@ mod settings;
 mod thumbnail;
 mod view;
 
-use content::{
-    CacheKey, ComicFile, Directory, FileExtension, FileType, ImageExtension, SortOrder, SortType,
-};
+use content::{CacheKey, ComicFile, FileExtension, FileType, ImageExtension};
 use view::UiCommand;
 
 /// アプリケーションのエントリーポイント。
@@ -115,14 +113,12 @@ pub enum InitialPage {
 const UI_UPDATE_CHANNEL_CAPACITY: usize = 256;
 
 impl eframe::App for MyApp {
-    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // eframe 0.34+ では `ui` メソッドの実装が必須です。
-        // ただし、eframe ランナーが呼ぶメインエントリポイントである `update` メソッドを
-        // 完全に上書きしているため、このダミー `ui` メソッドは実際には実行されません。
-    }
-
-    /// アプリケーションのUIを更新します。
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    /// アプリケーションのUIを構築します。
+    ///
+    /// eframe 0.34+ では `fn ui` が推奨エントリポイントです（`fn update` は非推奨）。
+    /// ルートパネルは `show_inside(ui)` で配置します。`ctx` は `ui.ctx()` から取得します。
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         let mut app_state = ComicViewerAppState {
             content_file: &mut self.content_file,
             current_image_handle: &mut self.current_image_handle,
@@ -137,13 +133,13 @@ impl eframe::App for MyApp {
             max_cache_mb_upper_limit: self.app_settings.max_cache_mb_upper_limit,
         };
 
-        let commands = self.ui_state.build_ui(ctx, frame, &mut app_state);
+        let commands = self.ui_state.build_ui(ui, frame, &mut app_state);
         for command in commands {
             self.handle_ui_command(command);
         }
 
-        self.ui_file_drag_and_drop(ctx);
-        self.handle_image_navigation(ctx);
+        self.ui_file_drag_and_drop(&ctx);
+        self.handle_image_navigation(&ctx);
 
         while let Ok(msg) = self.update_rx.try_recv() {
             match msg {
@@ -222,7 +218,7 @@ impl eframe::App for MyApp {
         if let Some(error) = &self.last_error {
             egui::Area::new("error_toast".into())
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
-                .show(ctx, |ui| {
+                .show(&ctx, |ui| {
                     let frame = egui::Frame::popup(ui.style());
                     frame.show(ui, |ui| {
                         ui.label(
@@ -339,10 +335,7 @@ impl MyApp {
         let image_cache = Arc::new(tokio::sync::Mutex::new(content::ImageCache::new(
             max_memory_usage,
         )));
-        let comic_loader = Arc::new(content::ComicLoader::new(
-            tokio_rt.clone(),
-            image_cache.clone(),
-        ));
+        let comic_loader = Arc::new(content::ComicLoader::new());
 
         Self {
             dropped_files: Default::default(),
@@ -463,13 +456,13 @@ impl MyApp {
             });
             let painter =
                 ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("file_drop_target")));
-            let screen_rect = ctx.screen_rect();
+            let screen_rect = ctx.viewport_rect();
             painter.rect_filled(screen_rect, 0.0, Color32::from_black_alpha(192));
             painter.text(
                 screen_rect.center(),
                 Align2::CENTER_CENTER,
                 text,
-                TextStyle::Heading.resolve(&ctx.style()),
+                TextStyle::Heading.resolve(&ctx.global_style()),
                 Color32::WHITE,
             );
         }
