@@ -298,16 +298,15 @@ impl MyApp {
                         Arc::new(egui::FontData::from_owned(font_data)),
                     );
 
-                    fonts
-                        .families
-                        .get_mut(&egui::FontFamily::Proportional)
-                        .unwrap()
-                        .insert(0, "ja_font".to_owned());
-                    fonts
-                        .families
-                        .get_mut(&egui::FontFamily::Monospace)
-                        .unwrap()
-                        .push("ja_font".to_owned());
+                    // `egui::FontDefinitions::default()` は Proportional/Monospace の両キーを
+                    // 必ず保持するが、安全のため `if let Some` で存在確認してから挿入する。
+                    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional)
+                    {
+                        family.insert(0, "ja_font".to_owned());
+                    }
+                    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                        family.push("ja_font".to_owned());
+                    }
                     font_loaded = true;
                     break;
                 }
@@ -320,11 +319,13 @@ impl MyApp {
             debug!("Japanese font (PlemolJP) not found. Using default fonts.");
         }
 
+        // MyApp::new は Result を返さないため ? 伝播できず、起動時1回の致命的失敗として
+        // 理由明記 expect で構築する（Agents.md: "Minimize unwrap/expect" の例外運用）。
         let tokio_rt = Arc::new(
             runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
-                .unwrap(),
+                .expect("Tokioマルチスレッドランタイムの構築に失敗しました"),
         );
         let max_memory_usage = app_settings.max_load_use_memory;
         let image_cache = Arc::new(tokio::sync::Mutex::new(content::ImageCache::new(
@@ -809,7 +810,12 @@ impl MyApp {
                         "Page not found in zip",
                     )),
                 },
-                _ => unreachable!(),
+                // FileType は Image/Zip 以外は上位（load_image_for_display 等）で return 済みだが、
+                // 静的保証ではないため、安全側に倒して警告ログ付きで early return する。
+                _ => {
+                    tracing::warn!("未対応の FileType です: {:?}", file.file_type);
+                    return;
+                }
             };
 
             match image_data_result {
