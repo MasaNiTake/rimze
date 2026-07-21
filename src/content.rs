@@ -134,6 +134,20 @@ pub enum FileType {
     Directory(Directory),
 }
 
+/// バイト列から画像をデコードし、egui 描画用の [`egui::ColorImage`] に変換します。
+///
+/// `image::load_from_memory` → RGBA8 変換 → [`egui::ColorImage::from_rgba_unmultiplied`] の
+/// 共通処理を集約したヘルパです。デコード失敗時は `None` を返します。
+pub fn decode_bytes_to_color_image(data: &[u8]) -> Option<egui::ColorImage> {
+    let img = image::load_from_memory(data).ok()?;
+    let size = [img.width() as usize, img.height() as usize];
+    let pixels = img.to_rgba8();
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        size,
+        pixels.as_flat_samples().as_slice(),
+    ))
+}
+
 /// 画像ファイルに関する情報を保持する構造体です。
 ///
 /// 画像のパスと、オプションで生の画像データを含みます。
@@ -161,18 +175,9 @@ impl ImageFile {
     /// 4. `egui::ColorImage::from_rgba_unmultiplied` を使用して `ColorImage` を作成し、`Some` でラップして返します。
     /// 5. デコードに失敗した場合、`None` を返します。
     pub fn get_egui_color_image(&self) -> Option<ColorImage> {
-        self.image_data.as_ref().and_then(|raw_img| {
-            if let Ok(img) = image::load_from_memory(raw_img) {
-                let size = [img.width() as _, img.height() as _];
-                let image_buffer = img.to_rgba8();
-                Some(ColorImage::from_rgba_unmultiplied(
-                    size,
-                    image_buffer.as_flat_samples().as_slice(),
-                ))
-            } else {
-                None
-            }
-        })
+        self.image_data
+            .as_ref()
+            .and_then(|raw_img| decode_bytes_to_color_image(raw_img))
     }
 }
 

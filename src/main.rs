@@ -786,11 +786,7 @@ impl MyApp {
                         .lock()
                         .await
                         .insert_prefetched_data(key, data.clone());
-                    if let Ok(img) = image::load_from_memory(&data) {
-                        let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                            [img.width() as _, img.height() as _],
-                            img.to_rgba8().as_flat_samples().as_slice(),
-                        );
+                    if let Some(color_image) = content::decode_bytes_to_color_image(&data) {
                         tx.send(UiUpdateMsg::ImageLoaded(color_image)).ok();
 
                         // サムネイル生成をこのタスク内からでも別タスクとしてキック
@@ -826,11 +822,7 @@ impl MyApp {
     ///
     /// `&[u8]` を受け取り、データのフルコピーなしでデコードする。
     fn decode_and_display(&self, image_data: &[u8]) {
-        if let Ok(img) = image::load_from_memory(image_data) {
-            let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                [img.width() as _, img.height() as _],
-                img.to_rgba8().as_flat_samples().as_slice(),
-            );
+        if let Some(color_image) = content::decode_bytes_to_color_image(image_data) {
             self.update_tx
                 .send(UiUpdateMsg::ImageLoaded(color_image))
                 .ok();
