@@ -517,7 +517,7 @@ impl MyApp {
                                 Ok(paths) => {
                                     let dir = content::Directory {
                                         path: path_clone,
-                                        files: paths,
+                                        files: Arc::new(paths),
                                     };
                                     // このアクションに対応する特定のメッセージを送信します。
                                     let _ = tx.try_send(UiUpdateMsg::DirectoryChangedFromDrop(dir));
@@ -648,7 +648,7 @@ impl MyApp {
                             }
                         } else {
                             // ディレクトリ内に画像ファイルがありません。ディレクトリ自体を読み込みます。
-                            let dir = content::Directory { path, files: paths };
+                            let dir = content::Directory { path, files: Arc::new(paths) };
                             let _ = tx.try_send(UiUpdateMsg::DirectoryLoaded(dir));
                         }
                     }
@@ -747,7 +747,7 @@ impl MyApp {
 
                     let dir = content::Directory {
                         path: path_clone_outer,
-                        files: paths,
+                        files: Arc::new(paths),
                     };
                     let msg = if is_parent {
                         UiUpdateMsg::ParentDirectoryLoaded(dir)
@@ -1075,7 +1075,7 @@ impl MyApp {
             return Vec::new();
         };
         if self.file_filter.is_empty() {
-            return dir.files.clone();
+            return (*dir.files).clone();
         }
         let filter = self.file_filter.to_lowercase();
         dir.files

@@ -105,8 +105,9 @@ pub enum FileType {
     Zip(ZipFile),
     /// PDFファイル。`PdfFile` 構造体に関連情報が含まれます。
     Pdf(PdfFile),
-    /// ディレクトリ。`Directory` 構造体に関連情報が含まれます。
-    Directory(Directory),
+    /// ディレクトリ。ディレクトリのパスのみを保持します。
+    /// 実際のファイル一覧は [`Directory`] 構造体として呼び出し元で別途管理されます。
+    Directory(PathBuf),
 }
 
 /// バイト列から画像をデコードし、egui 描画用の [`egui::ColorImage`] に変換します。
@@ -184,7 +185,8 @@ pub struct Directory {
     /// ディレクトリのパス。
     pub path: PathBuf,
     /// ディレクトリ内のファイルパスのリスト。
-    pub files: Vec<PathBuf>,
+    /// `Arc` で包むことでクローン時のフルコピーを回避する（参照カウント増加のみ）。
+    pub files: Arc<Vec<PathBuf>>,
 }
 /// ファイルのソート順を定義します。
 ///
@@ -290,10 +292,7 @@ impl ComicLoader {
         let original_path = path.clone();
         let metadata = tokio::fs::metadata(&original_path).await?;
         let file_type = if metadata.is_dir() {
-            FileType::Directory(Directory {
-                path: original_path.clone(),
-                files: vec![],
-            })
+            FileType::Directory(original_path.clone())
         } else if original_path
             .extension()
             .is_some_and(|ext| ext.to_string_lossy().to_lowercase() == "zip")
@@ -550,8 +549,8 @@ impl ImageCache {
             cache: lru::LruCache::unbounded(),
             current_memory_usage: 0,
             max_memory_usage,
-            window_size_next: 10,
-            window_size_prev: 5,
+            window_size_next: 100,
+            window_size_prev: 50,
         }
     }
 
