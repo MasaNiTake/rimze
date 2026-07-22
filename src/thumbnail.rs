@@ -23,7 +23,7 @@ impl ThumbnailWorker {
 
         rt.spawn(async move {
             let mut all_paths: Vec<PathBuf> = Vec::new();
-            let mut focus_idx: usize = 0;
+            let mut focus_idx: usize;
             let mut pending_indices: Vec<usize> = Vec::new();
 
             loop {

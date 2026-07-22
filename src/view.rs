@@ -1,7 +1,7 @@
 use crate::content::{FileType, SortOrder, SortType};
 use crate::thumbnail::ThumbnailManager;
 use crate::ComicViewerAppState;
-use eframe::egui::{self, Context};
+use eframe::egui::{self};
 use std::path::PathBuf;
 
 /// UIからアプリケーションのメインロジックへ送られるコマンドを定義します。
@@ -39,28 +39,33 @@ impl ComicViewerUI {
     /// アプリケーションのメインUIを構築します。
     pub fn build_ui(
         &mut self,
-        ctx: &Context,
+        ui: &mut egui::Ui,
         _frame: &mut eframe::Frame,
         app_state: &mut ComicViewerAppState,
     ) -> Vec<UiCommand> {
         let mut commands = Vec::new();
+        let ctx = ui.ctx();
 
         let monitor_height =
             ctx.input(|i| i.viewport().monitor_size.map(|s| s.y).unwrap_or(1080.0));
         let thumb_height = monitor_height * 0.05;
 
-        commands.extend(self.top_panel(ctx, app_state));
-        commands.extend(self.side_panel(ctx, app_state, thumb_height));
-        commands.extend(self.bottom_panel(ctx, app_state));
-        self.central_panel(ctx, app_state);
+        commands.extend(self.top_panel(ui, app_state));
+        commands.extend(self.side_panel(ui, app_state, thumb_height));
+        commands.extend(self.bottom_panel(ui, app_state));
+        self.central_panel(ui, app_state);
 
         commands
     }
 
     /// アプリケーションの上部パネル（メニューバー）を構築します。
-    fn top_panel(&mut self, ctx: &Context, app_state: &mut ComicViewerAppState) -> Vec<UiCommand> {
+    fn top_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        app_state: &mut ComicViewerAppState,
+    ) -> Vec<UiCommand> {
         let mut commands = Vec::new();
-        eframe::egui::Panel::top("top_panel").show(ctx, |ui| {
+        eframe::egui::Panel::top("top_panel").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button(self.tr(app_state.language, "ファイル", "File"), |ui| {
                     if ui
@@ -235,22 +240,22 @@ impl ComicViewerUI {
     /// アプリケーションのサイドパネル（漫画ファイルリスト）を構築します。
     fn side_panel(
         &mut self,
-        ctx: &Context,
+        ui: &mut egui::Ui,
         app_state: &mut ComicViewerAppState,
         thumb_height: f32,
     ) -> Vec<UiCommand> {
         let mut commands = Vec::new();
-        let screen_width = ctx.content_rect().width();
+        let screen_width = ui.available_width();
         let side_min_width = screen_width * 0.02;
         let central_min_width = screen_width * 0.03;
         let side_max_width = screen_width - central_min_width;
 
-        egui::SidePanel::left("side_panel")
-            .default_width(250.0)
-            .min_width(side_min_width)
-            .max_width(side_max_width)
+        egui::Panel::left("side_panel")
+            .default_size(250.0)
+            .min_size(side_min_width)
+            .max_size(side_max_width)
             .resizable(true)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.heading(self.tr(app_state.language, "ファイル一覧", "File List"));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -316,7 +321,7 @@ impl ComicViewerUI {
                                 if is_selected || response.hovered() {
                                     ui.painter().rect_filled(
                                         rect,
-                                        visuals.rounding(),
+                                        visuals.corner_radius,
                                         visuals.bg_fill,
                                     );
                                 }
@@ -383,9 +388,9 @@ impl ComicViewerUI {
     }
 
     /// アプリケーションの中央パネル（画像表示領域）を構築します。
-    fn central_panel(&mut self, ctx: &Context, app_state: &mut ComicViewerAppState) {
+    fn central_panel(&mut self, ui: &mut egui::Ui, app_state: &mut ComicViewerAppState) {
         let response = egui::CentralPanel::default()
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 if let Some(image_handle) = &app_state.current_image_handle {
                     let image_widget = egui::Image::new(image_handle)
                         .bg_fill(ui.style().visuals.panel_fill)
@@ -411,11 +416,11 @@ impl ComicViewerUI {
     /// アプリケーションの下部パネル（ページスライダー）を構築します。
     fn bottom_panel(
         &mut self,
-        ctx: &Context,
+        ui: &mut egui::Ui,
         app_state: &mut ComicViewerAppState,
     ) -> Vec<UiCommand> {
         let mut commands = Vec::new();
-        egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
+        egui::Panel::bottom("bottom_panel").show(ui, |ui| {
             ui.horizontal(|ui| {
                 let (current_file_label, current_page, max_pages) =
                     if let Some(file) = &app_state.content_file {
