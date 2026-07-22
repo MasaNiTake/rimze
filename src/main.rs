@@ -68,6 +68,12 @@ struct MyApp {
     file_filter: String,
     /// キャッシュ使用量ログの最終出力時刻。約1秒に1回の出力に間引きするために使用。
     last_cache_log: std::time::Instant,
+    /// D&D/ファイルオープン直後の「最初の1ページ表示待ち」コンテキスト。
+    ///
+    /// 最初の [`UiUpdateMsg::ImageLoaded`] 受信時に、ライブラリ一覧取得と
+    /// 隣接ページのプリフェッチを遅延起動する（最初の1ページの表示を最優先するため）。
+    /// `(container_path, needs_reload)` を保持する。
+    pending_initial_display: Option<(PathBuf, bool)>,
 }
 
 // UI構築のために必要なアプリケーション状態をまとめた構造体
@@ -163,6 +169,28 @@ impl eframe::App for MyApp {
                         color_image,
                         egui::TextureOptions::default(),
                     ));
+                    // D&D/オープン直後の最初の1ページ表示完了後、ライブラリ一覧取得と
+                    // 隣接ページのプリフェッチを遅延起動する（最初の1ページ表示を最優先）。
+                    if let Some((container_path, needs_reload)) =
+                        self.pending_initial_display.take()
+                    {
+                        debug!(
+                            "最初の1ページ表示完了。ライブラリ一覧取得とプリフェッチを開始: {:?}",
+                            container_path
+                        );
+                        if needs_reload {
+                            self.load_directory_content(container_path.clone(), false);
+                            if let Some(parent_path) = container_path.parent() {
+                                self.load_directory_content(parent_path.to_path_buf(), true);
+                            } else {
+                                self.parent_directory = None;
+                            }
+                        }
+                        // 隣接ページのプリフェッチ（現在のページを起点に計算）
+                        if let Some(key) = self.current_cache_key() {
+                            self.update_cache_and_prefetch(&key);
+                        }
+                    }
                 }
                 UiUpdateMsg::DirectoryChanged(directory) => {
                     debug!("Directory changed: {:?}", directory.path);
@@ -360,6 +388,7 @@ impl MyApp {
             app_settings,
             file_filter: String::new(),
             last_cache_log: std::time::Instant::now(),
+            pending_initial_display: None,
         }
     }
 
@@ -654,7 +683,6 @@ impl MyApp {
             },
         };
         self.content_file = Some(file);
-        self.load_image_for_display();
 
         let container_path = if path.is_dir() {
             path.clone()
@@ -667,30 +695,31 @@ impl MyApp {
             .as_ref()
             .map_or(true, |d| d.path != container_path);
 
+        // 最初の1ページ表示を最優先するため、ライブラリ一覧取得（サムネイル生成含む）と
+        // 隣接ページのプリフェッチを、最初の ImageLoaded 受信時まで遅延させる。
+        // load_image_for_display 内の update_cache_and_prefetch も初回時はスキップされる。
+        self.pending_initial_display = Some((container_path.clone(), needs_reload));
         if needs_reload {
             debug!(
-                "Directory has changed to {:?}. Reloading file list.",
+                "Directory has changed to {:?}. Deferring file list load until first page is shown.",
                 container_path
             );
             self.current_directory_path = Some(container_path.clone());
-            self.load_directory_content(container_path.clone(), false);
-
-            if let Some(parent_path) = container_path.parent() {
-                self.load_directory_content(parent_path.to_path_buf(), true);
-            } else {
-                self.parent_directory = None;
-            }
         } else {
             debug!(
                 "Staying in the same directory ({:?}). No reload needed.",
                 container_path
             );
+            // 同じディレクトリの場合、サムネイルのフォーカスは即座に設定（軽い処理のため
+            // 最初の1ページ表示に影響しない）。load_directory_content は不要。
             if let Some(dir) = &self.directory {
                 if let Some(idx) = dir.files.iter().position(|p| p == &path) {
                     self.thumbnail_worker.set_focus(idx);
                 }
             }
         }
+
+        self.load_image_for_display();
     }
 
     /// 指定されたディレクトリの内容を非同期でロードします。
@@ -734,6 +763,21 @@ impl MyApp {
         });
     }
 
+    /// 現在の `content_file` と `current_page_index` からキャッシュキーを計算します。
+    ///
+    /// [`FileType::Image`] の場合はファイルパス、[`FileType::Zip`] の場合は
+    /// `(パス, ページインデックス)` をキーとします。それ以外は `None` を返します。
+    fn current_cache_key(&self) -> Option<CacheKey> {
+        let file = self.content_file.as_ref()?;
+        match &file.file_type {
+            FileType::Image(_) => Some(CacheKey::File(file.path.clone())),
+            FileType::Zip(_) => {
+                Some(CacheKey::ZipEntry(file.path.clone(), self.current_page_index))
+            }
+            _ => None,
+        }
+    }
+
     /// 現在の`content_file`と`current_page_index`に基づいて画像を表示します。
     fn load_image_for_display(&mut self) {
         let file = match self.content_file.as_ref() {
@@ -767,7 +811,12 @@ impl MyApp {
             self.load_from_source_and_display(file, page_index, key.clone());
         }
 
-        self.update_cache_and_prefetch(&key);
+        // 最初の1ページ表示を最優先するため、初回オープン時（pending_initial_display
+        // がセットされている間）は隣接ページのプリフェッチをスキップする。
+        // プリフェッチは ImageLoaded 受信時に遅延起動される。
+        if self.pending_initial_display.is_none() {
+            self.update_cache_and_prefetch(&key);
+        }
     }
 
     /// サムネイル生成をバックグラウンドで試行します。
