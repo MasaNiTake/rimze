@@ -800,6 +800,21 @@ impl MyApp {
         let image_cache = self.image_cache.clone();
 
         spawn_tracked(&self.tokio_rt, async move {
+            // 処理時間計測の開始。読込内容（ファイルパス・ページ・エントリ名）をログ出力する。
+            let read_start = std::time::Instant::now();
+            match &file.file_type {
+                FileType::Image(_) => debug!("画像読込開始: {:?}", file.path),
+                FileType::Zip(zip_file) => {
+                    if let Some(entry) = zip_file.entries.get(page_index) {
+                        debug!(
+                            "ZIP エントリ読込開始: {:?}[{}] = {}",
+                            file.path, page_index, entry
+                        );
+                    }
+                }
+                _ => {}
+            }
+
             let image_data_result = match &file.file_type {
                 FileType::Image(_) => tokio::fs::read(&file.path).await.map_err(|e| e.into()),
                 FileType::Zip(zip_file) => match zip_file.entries.get(page_index) {
@@ -822,6 +837,12 @@ impl MyApp {
 
             match image_data_result {
                 Ok(data) => {
+                    debug!(
+                        "読込完了: {} バイト ({} KiB)、所要時間 {:?}",
+                        data.len(),
+                        data.len() / 1024,
+                        read_start.elapsed()
+                    );
                     // Vec<u8> を Arc で包み、キャッシュ挿入とデコード/サムネイルで共有（フルコピー回避）。
                     let data = Arc::new(data);
                     // 非同期タスク内のため lock().await で取得。Arc の clone は参照カウント増加のみ。
@@ -829,7 +850,19 @@ impl MyApp {
                         .lock()
                         .await
                         .insert_prefetched_data(key, data.clone());
+                    // キャッシュ挿入後のメモリ使用量をログ出力。
+                    {
+                        let cache = image_cache.lock().await;
+                        let usage = cache.current_memory_usage();
+                        debug!(
+                            "キャッシュ使用量: {} バイト ({} MiB)",
+                            usage,
+                            usage / 1024 / 1024
+                        );
+                    }
+                    let decode_start = std::time::Instant::now();
                     if let Some(color_image) = content::decode_bytes_to_color_image(&data) {
+                        debug!("デコード完了: 所要時間 {:?}", decode_start.elapsed());
                         let _ = tx.try_send(UiUpdateMsg::ImageLoaded(color_image));
 
                         // サムネイル生成をこのタスク内からでも別タスクとしてキック
@@ -873,7 +906,17 @@ impl MyApp {
     /// `&[u8]` を受け取り、データのフルコピーなしでデコードする。
     fn decode_and_display(&self, image_data: &[u8]) {
         // UI スレッドから呼ばれるため try_send を使用（.await 不可）。
+        let decode_start = std::time::Instant::now();
+        debug!(
+            "キャッシュヒット画像のデコード開始: {} バイト ({} KiB)",
+            image_data.len(),
+            image_data.len() / 1024
+        );
         if let Some(color_image) = content::decode_bytes_to_color_image(image_data) {
+            debug!(
+                "デコード完了（キャッシュヒット）: 所要時間 {:?}",
+                decode_start.elapsed()
+            );
             let _ = self
                 .update_tx
                 .try_send(UiUpdateMsg::ImageLoaded(color_image));
@@ -949,6 +992,7 @@ impl MyApp {
                 spawn_tracked(&self.tokio_rt, async move {
                     let data_result = match &key {
                         CacheKey::File(path) => {
+                            debug!("プリフェッチ読込開始（単独画像）: {:?}", path);
                             tokio::fs::read(path).await.map_err(|e| e.to_string())
                         }
                         CacheKey::ZipEntry(zip_path, _) => {
