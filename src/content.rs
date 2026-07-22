@@ -574,6 +574,14 @@ impl ImageCache {
         self.cache.get(key).cloned()
     }
 
+    /// キャッシュからキーを探し、LRU 順序を **更新せずに** 値を参照します（peek）。
+    ///
+    /// [`get`](Self::get) と異なりアクセス順序に影響を与えないため、
+    /// プリフェッチ判定など「キャッシュ存在確認のみ」の用途に適します。
+    pub fn peek(&self, key: &CacheKey) -> Option<Arc<Vec<u8>>> {
+        self.cache.peek(key).cloned()
+    }
+
     /// 画像データをキャッシュに挿入します。
     ///
     /// メモリ使用量上限に達している場合は、**LRU 古い順（`pop_lru`）に自動的に evict** してから

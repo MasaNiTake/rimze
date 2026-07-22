@@ -157,6 +157,14 @@ impl eframe::App for MyApp {
                 UiUpdateMsg::DirectoryLoaded(directory) => {
                     debug!("Directory loaded: {:?}", directory.path);
                     self.directory = Some(directory);
+                    // ディレクトリ一覧取得完了後、現在のページの隣接画像をプリフェッチする。
+                    // D&D 直後の最初の1ページ表示時は directory が未設定（load_directory_content が
+                    // 非同期未完了）だったため FileType::Image のプリフェッチキー計算が空になっていた。
+                    // ここで directory 設定後に再トリガーすることで、ディレクトリ内の隣接画像を
+                    // プリフェッチできるようになる。
+                    if let Some(key) = self.current_cache_key() {
+                        self.update_cache_and_prefetch(&key);
+                    }
                 }
                 UiUpdateMsg::ParentDirectoryLoaded(directory) => {
                     debug!("Parent directory loaded: {:?}", directory.path);
@@ -1004,7 +1012,41 @@ impl MyApp {
         // UI スレッドから呼ばれるため try_lock を使用。
         // ロック取得失敗時はそのフレームのプリフェッチをスキップする。
         let keys_to_prefetch = match self.image_cache.try_lock() {
-            Ok(cache) => cache.compute_prefetch_keys(center_key, &all_keys),
+            Ok(cache) => {
+                let mut keys = cache.compute_prefetch_keys(center_key, &all_keys);
+                // ディレクトリ内の隣接ファイル（ZIP のまたぎ）もプリフェッチ対象に追加。
+                // 現在のファイルの前後ファイル（ZIP なら最初のページ、画像ならその画像）の
+                // 未キャッシュキーを追加することで、別ファイルへの移動時もプリフェッチが効く。
+                if let Some(file) = self.content_file.as_ref() {
+                    if let Some(dir) = self.directory.as_ref() {
+                        if let Some(center_idx) = dir.files.iter().position(|p| p == &file.path) {
+                            let neighbor_count = 2;
+                            let start = center_idx.saturating_sub(neighbor_count);
+                            let end = (center_idx + neighbor_count)
+                                .min(dir.files.len().saturating_sub(1));
+                            for p in &dir.files[start..=end] {
+                                if p == &file.path {
+                                    continue;
+                                }
+                                let neighbor_key = if p
+                                    .extension()
+                                    .is_some_and(|e| e.to_string_lossy().to_lowercase() == "zip")
+                                {
+                                    CacheKey::ZipEntry(p.clone(), 0)
+                                } else {
+                                    CacheKey::File(p.clone())
+                                };
+                                if cache.peek(&neighbor_key).is_none()
+                                    && !keys.contains(&neighbor_key)
+                                {
+                                    keys.push(neighbor_key);
+                                }
+                            }
+                        }
+                    }
+                }
+                keys
+            }
             Err(e) => {
                 debug!(
                     "image_cache の try_lock に失敗したためプリフェッチキー計算をスキップします: {}",
