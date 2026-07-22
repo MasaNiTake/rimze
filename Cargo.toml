@@ -7,27 +7,27 @@ edition = "2021"
 
 [dependencies]
 chrono = "0.4.39"
-eframe = "*"
-egui_extras = { version = "*", features = ["all_loaders"] }
+eframe = "0.35"
+egui_extras = { version = "0.35", features = ["all_loaders"] }
 encoding_rs = "0.8.33"
 futures = "0.3.30"
-image = { version = "0.24", features = ["png","gif","bmp","webp",] }
+image = { version = "0.25", features = ["png","gif","bmp","webp","avif"] }
 # 真の LRU キャッシュ実装（O(1) の put/get/pop とアクセス順序管理）
-lru = "*"
+lru = "0.18"
 mime = "0.3.17"
 mime_guess = "2.0.4"
 serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "*"
-tokio = { version = "*", features = ["full"] }
+toml = "1"
+tokio = { version = "1", features = ["full"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-tokio-util = { version = "*", features = ["compat"] }
-zip = "0.6.6"
-lopdf = "0.30.0"
-directories = "5.0.1"
+tokio-util = { version = "0.7", features = ["compat"] }
+zip = "8.6"
+lopdf = "0.44"
+directories = "6.0"
 natural-sort-rs = "0.2.1"
-rfd = "0.15.3"
-sha2 = "0.10"
+rfd = "0.17"
+sha2 = "0.11"
 hex = "0.4"
 
 [profile.dev]

@@ -1,6 +1,6 @@
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::{debug, error};
 
 use crate::content::{SortOrder, SortType};
@@ -59,14 +59,14 @@ impl AppSettings {
     }
 
     pub fn get_config_path() -> Option<PathBuf> {
-        Self::get_config_dir().map(|dir| dir.join("settings.yaml"))
+        Self::get_config_dir().map(|dir| dir.join("settings.toml"))
     }
 
     pub fn load() -> Self {
         if let Some(path) = Self::get_config_path() {
             if path.exists() {
                 match std::fs::read_to_string(&path) {
-                    Ok(content) => match serde_yaml::from_str(&content) {
+                    Ok(content) => match toml::from_str(&content) {
                         Ok(settings) => {
                             debug!("Loaded settings from {:?}", path);
                             return settings;
@@ -88,7 +88,7 @@ impl AppSettings {
                     return;
                 }
             }
-            match serde_yaml::to_string(self) {
+            match toml::to_string(self) {
                 Ok(content) => {
                     if let Err(e) = std::fs::write(&path, content) {
                         error!("Failed to write settings file: {}", e);
