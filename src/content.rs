@@ -758,17 +758,33 @@ impl ImageCache {
             .collect()
     }
 
-    /// プリフェッチされた画像データをキャッシュに挿入します。
+    /// プリフェッチされた画像データをキャッシュに挿入します（**非 evict**）。
     ///
-    /// プリフェッチ対象かどうかの判定は [`compute_prefetch_keys`](Self::compute_prefetch_keys) 側で
-    /// 済んでいる前提で、ここでは単に [`insert`](Self::insert) に委譲します。
-    /// LRU のメモリ上限管理（古い順 evict）は `insert` 内で行われます。
+    /// [`insert`](Self::insert) と異なり、**既存エントリを evict しません**。
+    /// 空き容量に収まらない場合は挿入をスキップします。
+    /// これにより「だいぶ先の新しいものを得るために、既存キャッシュを追い出す」
+    /// ことを防ぎます。表示用の読み込み（[`insert`](Self::insert)）は常に evict して
+    /// 表示を優先しますが、プリフェッチは既存キャッシュを保全します。
     ///
     /// # 引数
     /// - `key`: 挿入するデータの `CacheKey`。
     /// - `data`: 挿入する画像のバイトデータ（`Arc` で共有）。
     pub fn insert_prefetched_data(&mut self, key: CacheKey, data: Arc<Vec<u8>>) {
-        self.insert(key, data);
+        let size = data.len();
+        // 既存エントリがある場合は更新（サイズ差を調整）
+        if let Some(old) = self.cache.pop(&key) {
+            self.current_memory_usage -= old.len();
+        }
+        // 空き容量に収まらない場合は挿入をスキップ（evict しない）
+        if self.current_memory_usage + size > self.max_memory_usage {
+            debug!(
+                "Prefetch insert skipped (would require eviction): {:?} ({} bytes)",
+                key, size
+            );
+            return;
+        }
+        self.current_memory_usage += size;
+        let _ = self.cache.put(key, data);
     }
 }
 

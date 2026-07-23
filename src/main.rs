@@ -1119,11 +1119,10 @@ impl MyApp {
                     );
                     // Vec<u8> を Arc で包み、キャッシュ挿入とデコード/サムネイルで共有（フルコピー回避）。
                     let data = Arc::new(data);
-                    // 非同期タスク内のため lock().await で取得。Arc の clone は参照カウント増加のみ。
-                    image_cache
-                        .lock()
-                        .await
-                        .insert_prefetched_data(key, data.clone());
+                    // 表示用の読み込みは insert（evict あり）で確実にキャッシュへ格納する。
+                    // プリフェッチ（insert_prefetched_data）と異なり、LRU 古い順に evict
+                    // してでも現在表示中の画像をキャッシュに残す。
+                    image_cache.lock().await.insert(key, data.clone());
                     // キャッシュ挿入後のメモリ使用量をログ出力。
                     {
                         let cache = image_cache.lock().await;
@@ -1294,8 +1293,36 @@ impl MyApp {
             }
         };
 
+        // プリフェッチで開くファイル数を10ファイルに制限する。
+        // compute_prefetch_keys は中心に近い順（読書順）にキーを返すため、
+        // 最初の10ファイル分のキーのみを保持することで、近いファイルを優先する。
+        // 「読み込むファイル数は10が限界」という要件に対応。
+        const MAX_PREFETCH_FILES: usize = 10;
+        let mut seen_files: Vec<PathBuf> = Vec::new();
+        let keys_to_prefetch: Vec<CacheKey> = keys_to_prefetch
+            .into_iter()
+            .filter(|key| {
+                let path: &PathBuf = match key {
+                    CacheKey::File(p) => p,
+                    CacheKey::ZipEntry(p, _) => p,
+                };
+                if seen_files.iter().any(|p| p == path) {
+                    true
+                } else if seen_files.len() < MAX_PREFETCH_FILES {
+                    seen_files.push(path.clone());
+                    true
+                } else {
+                    false
+                }
+            })
+            .collect();
+
         if !keys_to_prefetch.is_empty() {
-            debug!("Prefetching {} keys.", keys_to_prefetch.len());
+            debug!(
+                "Prefetching {} keys from {} files.",
+                keys_to_prefetch.len(),
+                seen_files.len()
+            );
 
             for key in keys_to_prefetch {
                 // CacheKey::ZipEntry の index から該当エントリ名を解決する。
