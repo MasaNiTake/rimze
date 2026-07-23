@@ -2,7 +2,7 @@ use eframe::egui;
 use std::{path::PathBuf, sync::Arc};
 use tokio::runtime;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod content;
@@ -102,6 +102,9 @@ pub enum UiUpdateMsg {
     DirectoryChangedFromDrop(content::Directory),
     /// ファイルダイアログで選択されたファイルを開く。
     FilePicked(PathBuf),
+    /// ディレクトリ内各 ZIP ファイルのエントリ名リストがバックグラウンド取得完了した。
+    /// `(ディレクトリパス, 各ファイルのエントリ名リスト)`
+    FileEntriesUpdated(PathBuf, Arc<Vec<Vec<String>>>),
     Error(String),
 }
 
@@ -220,6 +223,19 @@ impl eframe::App for MyApp {
                             self.open_new_file(first_file.clone());
                         } else {
                             debug!("No image or zip files found in directory");
+                        }
+                    }
+                }
+                UiUpdateMsg::FileEntriesUpdated(dir_path, file_entries) => {
+                    debug!("File entries updated: {:?}", dir_path);
+                    if let Some(dir) = &mut self.directory {
+                        if dir.path == dir_path {
+                            dir.file_entries = file_entries;
+                            // file_entries 更新後にプリフェッチを再トリガー
+                            // （取得前は別 ZIP のエントリ名が分からずスキップされていたため）。
+                            if let Some(key) = self.current_cache_key() {
+                                self.update_cache_and_prefetch(&key);
+                            }
                         }
                     }
                 }
@@ -523,9 +539,11 @@ impl MyApp {
                                 .await
                             {
                                 Ok(paths) => {
+                                    let file_count = paths.len();
                                     let dir = content::Directory {
                                         path: path_clone,
                                         files: Arc::new(paths),
+                                        file_entries: Arc::new(vec![Vec::new(); file_count]),
                                     };
                                     // このアクションに対応する特定のメッセージを送信します。
                                     let _ = tx.try_send(UiUpdateMsg::DirectoryChangedFromDrop(dir));
@@ -656,7 +674,12 @@ impl MyApp {
                             }
                         } else {
                             // ディレクトリ内に画像ファイルがありません。ディレクトリ自体を読み込みます。
-                            let dir = content::Directory { path, files: Arc::new(paths) };
+                            let file_count = paths.len();
+                            let dir = content::Directory {
+                                path,
+                                files: Arc::new(paths),
+                                file_entries: Arc::new(vec![Vec::new(); file_count]),
+                            };
                             let _ = tx.try_send(UiUpdateMsg::DirectoryLoaded(dir));
                         }
                     }
@@ -753,9 +776,14 @@ impl MyApp {
                         thumbnail_worker.new_list(paths.clone());
                     }
 
+                    // 即座に DirectoryLoaded を送信（file_entries は空）。
+                    // UI 側でファイル一覧を即時表示できるようにするため、
+                    // 各 ZIP のエントリ名リスト取得は後でバックグラウンドに行う。
+                    let file_count = paths.len();
                     let dir = content::Directory {
-                        path: path_clone_outer,
-                        files: Arc::new(paths),
+                        path: path_clone_outer.clone(),
+                        files: Arc::new(paths.clone()),
+                        file_entries: Arc::new(vec![Vec::new(); file_count]),
                     };
                     let msg = if is_parent {
                         UiUpdateMsg::ParentDirectoryLoaded(dir)
@@ -763,6 +791,23 @@ impl MyApp {
                         UiUpdateMsg::DirectoryLoaded(dir)
                     };
                     let _ = tx.try_send(msg);
+
+                    // 親ディレクトリでない場合、各 ZIP のエントリ名リストを
+                    // バックグラウンドで取得し、完了後に FileEntriesUpdated を送信する。
+                    // プリフェッチで別 ZIP のエントリ名を正しく解決するために必要。
+                    if !is_parent {
+                        match comic_loader.get_file_entries(paths).await {
+                            Ok(file_entries) => {
+                                let _ = tx.try_send(UiUpdateMsg::FileEntriesUpdated(
+                                    path_clone_outer,
+                                    Arc::new(file_entries),
+                                ));
+                            }
+                            Err(e) => {
+                                warn!("file_entries 取得エラー: {e}");
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     let _ = tx.try_send(UiUpdateMsg::Error(e.to_string()));
@@ -986,18 +1031,66 @@ impl MyApp {
 
     /// プリフェッチ対象キーを計算し、必要なプリフェッチタスクを開始する
     fn update_cache_and_prefetch(&mut self, center_key: &CacheKey) {
+        // 隣接 ZIP ファイルの読み込み上限（前後それぞれ）。
+        // 多すぎると ZIP ファイルを開きすぎてしまうため制限する。
+        const NEIGHBOR_ZIPS: usize = 10;
+        // 隣接画像ファイルの読み込み上限（前後それぞれ）。
+        // 画像ファイルは1ファイル=1ページのため、±1000ページをカバーする。
+        const NEIGHBOR_IMAGES: usize = 1000;
+
         let Some(all_keys) = (|| -> Option<Vec<CacheKey>> {
             let file = self.content_file.as_ref()?;
-            match &file.file_type {
-                FileType::Image(_) => {
-                    let dir = self.directory.as_ref()?;
-                    Some(
-                        dir.files
-                            .iter()
-                            .map(|p| CacheKey::File(p.clone()))
-                            .collect(),
-                    )
+            let dir = self.directory.as_ref();
+
+            // ディレクトリがあり、現在のファイルがそのリストに含まれている場合、
+            // ファイル境界をまたいだ all_keys を構築する（前後の ZIP・画像を含む）。
+            if let Some(dir) = dir {
+                if let Some(center_file_idx) = dir.files.iter().position(|p| p == &file.path) {
+                    let mut keys = Vec::new();
+                    for (i, p) in dir.files.iter().enumerate() {
+                        let distance = i.abs_diff(center_file_idx);
+                        let ext = p
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        if ext == "zip" {
+                            // 隣接 ZIP ファイル数を制限
+                            if distance > NEIGHBOR_ZIPS {
+                                continue;
+                            }
+                            // 現在開いている ZIP は content_file から、
+                            // 他の ZIP は directory.file_entries からエントリ名リストを取得。
+                            // file_entries 未取得（空）の ZIP はスキップされ、
+                            // FileEntriesUpdated 到着後に再トリガーされる。
+                            let entries: Vec<String> = if p == &file.path {
+                                match &file.file_type {
+                                    FileType::Zip(zip_file) => zip_file.entries.clone(),
+                                    _ => continue,
+                                }
+                            } else {
+                                dir.file_entries.get(i).cloned().unwrap_or_default()
+                            };
+                            for page_idx in 0..entries.len() {
+                                keys.push(CacheKey::ZipEntry(p.clone(), page_idx));
+                            }
+                        } else if ImageExtension::from_str(&ext).is_some() {
+                            // 隣接画像ファイル数を制限
+                            if distance > NEIGHBOR_IMAGES {
+                                continue;
+                            }
+                            keys.push(CacheKey::File(p.clone()));
+                        }
+                        // ディレクトリ・PDF・Unknown はスキップ
+                    }
+                    return Some(keys);
                 }
+            }
+
+            // フォールバック: ディレクトリがない、またはファイルがリストにない場合。
+            // 現在のファイル内のみの all_keys を構築する。
+            match &file.file_type {
+                FileType::Image(_) => None,
                 FileType::Zip(zip_file) => Some(
                     (0..zip_file.entries.len())
                         .map(|i| CacheKey::ZipEntry(file.path.clone(), i))
@@ -1012,41 +1105,7 @@ impl MyApp {
         // UI スレッドから呼ばれるため try_lock を使用。
         // ロック取得失敗時はそのフレームのプリフェッチをスキップする。
         let keys_to_prefetch = match self.image_cache.try_lock() {
-            Ok(cache) => {
-                let mut keys = cache.compute_prefetch_keys(center_key, &all_keys);
-                // ディレクトリ内の隣接ファイル（ZIP のまたぎ）もプリフェッチ対象に追加。
-                // 現在のファイルの前後ファイル（ZIP なら最初のページ、画像ならその画像）の
-                // 未キャッシュキーを追加することで、別ファイルへの移動時もプリフェッチが効く。
-                if let Some(file) = self.content_file.as_ref() {
-                    if let Some(dir) = self.directory.as_ref() {
-                        if let Some(center_idx) = dir.files.iter().position(|p| p == &file.path) {
-                            let neighbor_count = 2;
-                            let start = center_idx.saturating_sub(neighbor_count);
-                            let end = (center_idx + neighbor_count)
-                                .min(dir.files.len().saturating_sub(1));
-                            for p in &dir.files[start..=end] {
-                                if p == &file.path {
-                                    continue;
-                                }
-                                let neighbor_key = if p
-                                    .extension()
-                                    .is_some_and(|e| e.to_string_lossy().to_lowercase() == "zip")
-                                {
-                                    CacheKey::ZipEntry(p.clone(), 0)
-                                } else {
-                                    CacheKey::File(p.clone())
-                                };
-                                if cache.peek(&neighbor_key).is_none()
-                                    && !keys.contains(&neighbor_key)
-                                {
-                                    keys.push(neighbor_key);
-                                }
-                            }
-                        }
-                    }
-                }
-                keys
-            }
+            Ok(cache) => cache.compute_prefetch_keys(center_key, &all_keys),
             Err(e) => {
                 debug!(
                     "image_cache の try_lock に失敗したためプリフェッチキー計算をスキップします: {}",
@@ -1058,22 +1117,31 @@ impl MyApp {
 
         if !keys_to_prefetch.is_empty() {
             debug!("Prefetching {} keys.", keys_to_prefetch.len());
-            // CacheKey::ZipEntry の index → entry_name 解決用に、現在開いている ZIP の
-            // エントリ名リストを取得する。spawn する非同期クロージャは 'static であり
-            // self にアクセスできないため、ループ内で事前に entry_name を解決してから
-            // クロージャへ move する（SingleFile 側は key 内にパスを直接持つため不要）。
-            let zip_entries: Option<&Vec<String>> =
-                self.content_file.as_ref().and_then(|f| match &f.file_type {
-                    FileType::Zip(zip_file) => Some(&zip_file.entries),
-                    _ => None,
-                });
+            let file = self.content_file.as_ref();
+            let dir = self.directory.as_ref();
 
             for key in keys_to_prefetch {
-                // CacheKey::ZipEntry の index から該当エントリ名を事前解決する。
-                // index が範囲外（None）の場合はクロージャ内でスキップする。
+                // CacheKey::ZipEntry の index から該当エントリ名を解決する。
+                // 現在開いている ZIP は content_file から、
+                // 他の ZIP は directory.file_entries から取得する。
+                // 【重要】d4c48d0 のバグ原因: 現在の ZIP のエントリリストで
+                // 別 ZIP の index を解決していた。ここで zip_path ごとに正しく解決する。
                 let zip_entry_name = match &key {
-                    CacheKey::ZipEntry(_, index) => {
-                        zip_entries.and_then(|entries| entries.get(*index).cloned())
+                    CacheKey::ZipEntry(zip_path, index) => {
+                        if Some(zip_path) == file.map(|f| &f.path) {
+                            file.and_then(|f| match &f.file_type {
+                                FileType::Zip(zip_file) => zip_file.entries.get(*index).cloned(),
+                                _ => None,
+                            })
+                        } else {
+                            dir.and_then(|d| {
+                                d.files
+                                    .iter()
+                                    .position(|p| p == zip_path)
+                                    .and_then(|idx| d.file_entries.get(idx))
+                                    .and_then(|entries| entries.get(*index).cloned())
+                            })
+                        }
                     }
                     _ => None,
                 };
@@ -1087,7 +1155,8 @@ impl MyApp {
                             tokio::fs::read(path).await.map_err(|e| e.to_string())
                         }
                         CacheKey::ZipEntry(zip_path, _) => {
-                            // index が範囲外などでエントリ名が解決できない場合はスキップする。
+                            // エントリ名が解決できない場合はスキップする
+                            // （file_entries 未取得の ZIP など）。
                             let Some(entry_name) = zip_entry_name.as_ref() else {
                                 return;
                             };

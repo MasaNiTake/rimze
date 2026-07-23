@@ -187,6 +187,12 @@ pub struct Directory {
     /// ディレクトリ内のファイルパスのリスト。
     /// `Arc` で包むことでクローン時のフルコピーを回避する（参照カウント増加のみ）。
     pub files: Arc<Vec<PathBuf>>,
+    /// 各ファイルの ZIP エントリ名リスト（`files` と同順・同長）。
+    /// ZIP ファイルの場合は画像エントリ名のソート済みリスト、
+    /// それ以外（画像・PDF・ディレクトリ・Unknown）は空 `Vec`。
+    /// プリフェッチで別 ZIP のエントリ名を正しく解決するために保持する。
+    /// `Arc` で包むことでクローン時のフルコピーを回避する。
+    pub file_entries: Arc<Vec<Vec<String>>>,
 }
 /// ファイルのソート順を定義します。
 ///
@@ -501,6 +507,71 @@ impl ComicLoader {
         }
         Ok(paths)
     }
+
+    /// 指定されたファイルパスリストの各 ZIP ファイルについて、画像エントリ名リストを
+    /// 並行取得します。非 ZIP ファイル（画像・PDF・ディレクトリ等）には空 `Vec` を返します。
+    ///
+    /// `list_directory_paths` で取得した `paths` と同じ順序・長さの `Vec<Vec<String>>` を返し、
+    /// 各要素は対応するファイルの ZIP エントリ名リスト（自然順ソート済み）です。
+    /// これによりプリフェッチ時に別 ZIP のエントリ名を正しく解決できます。
+    ///
+    /// # 引数
+    /// - `paths`: エントリ名を取得するファイルパスのリスト。
+    ///
+    /// # 戻り値
+    /// `Result<Vec<Vec<String>>, Box<dyn std::error::Error + Send + Sync>>`:
+    /// 各ファイルのエントリ名リスト、またはエラーが発生した場合はエラーオブジェクト。
+    pub async fn get_file_entries(
+        &self,
+        paths: Vec<PathBuf>,
+    ) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut handles = Vec::with_capacity(paths.len());
+        for path in paths {
+            handles.push(tokio::task::spawn_blocking(
+                move || -> Result<Vec<String>, std::io::Error> {
+                    let is_zip = path
+                        .extension()
+                        .is_some_and(|ext| ext.to_string_lossy().to_lowercase() == "zip");
+                    if !is_zip {
+                        return Ok(Vec::new());
+                    }
+                    let file = std::fs::File::open(&path)?;
+                    let archive = ZipArchive::new(file)?;
+                    let mut image_entries: Vec<String> = archive
+                        .file_names()
+                        .filter(|name| {
+                            !name.ends_with('/') && {
+                                if let Some(ext) = name.split('.').last() {
+                                    ImageExtension::from_str(ext).is_some()
+                                } else {
+                                    false
+                                }
+                            }
+                        })
+                        .map(|s| s.to_string())
+                        .collect();
+                    image_entries.natural_sort::<str>();
+                    Ok(image_entries)
+                },
+            ));
+        }
+
+        let mut result = Vec::with_capacity(handles.len());
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(entries)) => result.push(entries),
+                Ok(Err(e)) => {
+                    warn!("ZIP エントリ取得に失敗しました: {e}");
+                    result.push(Vec::new());
+                }
+                Err(join_err) => {
+                    warn!("ZIP エントリ取得タスクがパニックしました: {join_err}");
+                    result.push(Vec::new());
+                }
+            }
+        }
+        Ok(result)
+    }
 }
 
 /// キャッシュのキーを定義します。
@@ -549,8 +620,8 @@ impl ImageCache {
             cache: lru::LruCache::unbounded(),
             current_memory_usage: 0,
             max_memory_usage,
-            window_size_next: 100,
-            window_size_prev: 50,
+            window_size_next: 1000,
+            window_size_prev: 1000,
         }
     }
 
@@ -572,14 +643,6 @@ impl ImageCache {
     /// `Option<Arc<Vec<u8>>>`: 取得された画像データの `Arc`、またはキーが存在しない場合は `None`。
     pub fn get(&mut self, key: &CacheKey) -> Option<Arc<Vec<u8>>> {
         self.cache.get(key).cloned()
-    }
-
-    /// キャッシュからキーを探し、LRU 順序を **更新せずに** 値を参照します（peek）。
-    ///
-    /// [`get`](Self::get) と異なりアクセス順序に影響を与えないため、
-    /// プリフェッチ判定など「キャッシュ存在確認のみ」の用途に適します。
-    pub fn peek(&self, key: &CacheKey) -> Option<Arc<Vec<u8>>> {
-        self.cache.peek(key).cloned()
     }
 
     /// 画像データをキャッシュに挿入します。
@@ -792,8 +855,10 @@ mod tests {
 
     #[test]
     fn test_compute_prefetch_keys() {
-        // デフォルトの window_size_prev=5, window_size_next=10。
         let mut cache = ImageCache::new(1000);
+        // テスト用に小さいウィンドウサイズを明示的に設定（実運用は 1000/1000）。
+        cache.window_size_prev = 5;
+        cache.window_size_next = 10;
         let all_keys: Vec<CacheKey> = (0..20).map(key).collect();
         let center = key(10);
 
