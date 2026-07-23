@@ -1280,10 +1280,19 @@ impl MyApp {
             return;
         };
 
+        // all_keys を protected set に変換（現在位置の±10ファイル範囲内のキー）。
+        // 「現在位置から±10ファイル以内にない画像は evict する」要件に対応。
+        let protected: std::collections::HashSet<CacheKey> = all_keys.iter().cloned().collect();
+
         // UI スレッドから呼ばれるため try_lock を使用。
         // ロック取得失敗時はそのフレームのプリフェッチをスキップする。
         let keys_to_prefetch = match self.image_cache.try_lock() {
-            Ok(cache) => cache.compute_prefetch_keys(center_key, &all_keys),
+            Ok(mut cache) => {
+                // 範囲外エントリを evict（protected set に含まれないキーを削除）
+                cache.evict_outside_keys(&protected);
+                // プリフェッチ対象キーを計算
+                cache.compute_prefetch_keys(center_key, &all_keys)
+            }
             Err(e) => {
                 debug!(
                     "image_cache の try_lock に失敗したためプリフェッチキー計算をスキップします: {}",

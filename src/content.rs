@@ -721,6 +721,28 @@ impl ImageCache {
         self.current_memory_usage = 0;
     }
 
+    /// 指定されたキーセットに含まれないエントリをすべて evict します。
+    ///
+    /// 「現在位置から±10ファイル以内にない画像は evict する」要件に対応。
+    /// `protected` に含まれるキーのエントリは保持し、それ以外を削除します。
+    ///
+    /// # 引数
+    /// - `protected`: 保持するキーのセット（現在位置の±10ファイル範囲内のキー）。
+    pub fn evict_outside_keys(&mut self, protected: &std::collections::HashSet<CacheKey>) {
+        let keys_to_evict: Vec<CacheKey> = self
+            .cache
+            .iter()
+            .map(|(k, _)| k.clone())
+            .filter(|k| !protected.contains(k))
+            .collect();
+        for key in keys_to_evict {
+            if let Some(data) = self.cache.pop(&key) {
+                self.current_memory_usage -= data.len();
+                debug!("Evicted entry outside ±10 files range: {:?}", key);
+            }
+        }
+    }
+
     /// 現在表示中のキーを中心に、プリフェッチ対象のキーリストを計算して返します。
     ///
     /// `window_size_prev` / `window_size_next` に基づき `center_key` 前後の範囲を計算し、
