@@ -747,6 +747,11 @@ impl ImageCache {
     ///
     /// `window_size_prev` / `window_size_next` に基づき `center_key` 前後の範囲を計算し、
     /// そのうち **まだキャッシュに存在しないキーのみ** を返します。
+    ///
+    /// **中心から近い順（インターリーブ）** で返します:
+    /// `center-1, center+1, center-2, center+2, ...`
+    /// これにより「現在位置から±10ページを最優先で読み込む」要件に対応します。
+    ///
     /// 存在判定には `peek`（LRU 順序を更新しない読み取り専用アクセス）を使用するため、
     /// プリフェッチ判定自体が LRU 順序に影響を与えることはありません。
     ///
@@ -755,7 +760,8 @@ impl ImageCache {
     /// - `all_keys`: すべての可能な `CacheKey` の順序付きリストへのスライス。
     ///
     /// # 戻り値
-    /// `Vec<CacheKey>`: プリフェッチが必要な（未キャッシュの）`CacheKey` のリスト。
+    /// `Vec<CacheKey>`: プリフェッチが必要な（未キャッシュの）`CacheKey` のリスト
+    /// （中心に近い順）。
     pub fn compute_prefetch_keys(
         &self,
         center_key: &CacheKey,
@@ -772,12 +778,27 @@ impl ImageCache {
             return vec![];
         }
 
-        // peek は LRU 順序を更新しないため、プリフェッチ判定に安全に使用できる。
-        all_keys[start..=end]
-            .iter()
-            .filter(|k| self.cache.peek(*k).is_none())
-            .cloned()
-            .collect()
+        // 中心から近い順にインターリーブ（center-1, center+1, center-2, center+2, ...）
+        let prev_range = center_idx - start;
+        let next_range = end - center_idx;
+        let mut result = Vec::new();
+        for offset in 1..=prev_range.max(next_range) {
+            // center より前
+            if offset <= prev_range {
+                let idx = center_idx - offset;
+                if self.cache.peek(&all_keys[idx]).is_none() {
+                    result.push(all_keys[idx].clone());
+                }
+            }
+            // center より後
+            if offset <= next_range {
+                let idx = center_idx + offset;
+                if self.cache.peek(&all_keys[idx]).is_none() {
+                    result.push(all_keys[idx].clone());
+                }
+            }
+        }
+        result
     }
 
     /// プリフェッチされた画像データをキャッシュに挿入します（**非 evict**）。
